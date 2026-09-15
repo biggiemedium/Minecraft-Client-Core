@@ -1,0 +1,38 @@
+// Standalone build for the Core package.
+//
+// Core has NO Minecraft on its classpath. That is deliberate: if this project
+// compiles, Core is provably free of net.minecraft imports and can be dropped
+// into a project for any game version.
+//
+// To use Core in a version project, copy src/main/java/dev/px/core into that
+// project's source tree and add the same three dependencies below.
+
+plugins {
+    id 'java'
+}
+
+group = 'dev.px'
+version = '1.0'
+
+sourceCompatibility = targetCompatibility = JavaVersion.VERSION_1_8
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Lombok: compile-time only, nothing lands in the jar.
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+    // Gson ships with Minecraft on every version, so it is compileOnly here.
+    compileOnly 'com.google.code.gson:gson:2.8.9'
+
+    testCompileOnly 'org.projectlombok:lombok:1.18.30'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.30'
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:-unchecked' << '-parameters'
+}
