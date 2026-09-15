@@ -157,7 +157,9 @@ public final class Render {
     // ----------------------------------------------------------- 2D: text
 
     public static void text(String value, float x, float y, Color color) {
-        backend2D.text(requireFont(), value, x, y, color);
+        if (defaultFont != null) {
+            backend2D.text(defaultFont, value, x, y, color);
+        }
     }
 
     public static void text(Font font, String value, float x, float y, Color color) {
@@ -165,7 +167,9 @@ public final class Render {
     }
 
     public static void textShadowed(String value, float x, float y, Color color) {
-        backend2D.textShadowed(requireFont(), value, x, y, color, Color.of(0, 0, 0, 160));
+        if (defaultFont != null) {
+            backend2D.textShadowed(defaultFont, value, x, y, color, Color.of(0, 0, 0, 160));
+        }
     }
 
     public static void textShadowed(Font font, String value, float x, float y, Color color, Color shadow) {
@@ -178,11 +182,11 @@ public final class Render {
     }
 
     public static float textWidth(String value) {
-        return requireFont().widthOf(value);
+        return defaultFont == null ? 0f : defaultFont.widthOf(value);
     }
 
     public static float textHeight() {
-        return requireFont().getHeight();
+        return defaultFont == null ? 0f : defaultFont.getHeight();
     }
 
     // -------------------------------------------------------- 2D: textures
@@ -344,11 +348,17 @@ public final class Render {
         backend3D.setDepthTest(enabled);
     }
 
-    private static Font requireFont() {
-        Font font = defaultFont;
-        if (font == null) {
-            throw new IllegalStateException("No default font set; install a FontProvider before drawing text");
-        }
-        return font;
+    /**
+     * @return whether text drawn through the no-font overloads will appear.
+     *
+     * <p>Text calls with no default font installed are dropped, and measurements
+     * return zero, rather than throwing. That keeps the documented contract that
+     * drawing before a backend exists is harmless, and lets a HUD element size
+     * itself from text during early startup without a guard.
+     * {@link dev.px.core.render.font.FontService} already warns once when no
+     * provider is installed, so the misconfiguration is still reported.
+     */
+    public static boolean hasFont() {
+        return defaultFont != null;
     }
 }

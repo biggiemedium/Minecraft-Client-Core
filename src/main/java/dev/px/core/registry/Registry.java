@@ -111,8 +111,32 @@ public class Registry<T extends Named> implements Iterable<T> {
         return name != null && byName.containsKey(key(name));
     }
 
+    /**
+     * @return a live, unmodifiable view of the entries, in order.
+     *
+     * <p>A view, not a copy: it reflects later registrations, and iterating it
+     * while registering or unregistering throws. Use {@link #clear()} to empty
+     * the registry, and copy the list first if you must mutate during a walk.
+     */
     public List<T> all() {
         return Collections.unmodifiableList(ordered);
+    }
+
+    /**
+     * Removes every entry, notifying {@link #onUnregistered} for each.
+     *
+     * <p>Exists because the obvious way to write it &mdash; iterating
+     * {@link #all()} and unregistering &mdash; walks a live view and throws
+     * {@link java.util.ConcurrentModificationException}. Config loads that
+     * replace a whole list wholesale need this.
+     */
+    public void clear() {
+        List<T> snapshot = new ArrayList<>(ordered);
+        ordered.clear();
+        byName.clear();
+        for (T entry : snapshot) {
+            onUnregistered(entry);
+        }
     }
 
     public List<T> where(Predicate<? super T> filter) {

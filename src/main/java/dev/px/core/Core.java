@@ -9,6 +9,7 @@ import dev.px.core.config.ToggleableSection;
 import dev.px.core.event.EventBus;
 import dev.px.core.event.bus.CoreEventBus;
 import dev.px.core.event.impl.ClientLifecycleEvent;
+import dev.px.core.hud.HudService;
 import dev.px.core.input.InputService;
 import dev.px.core.integration.IntegrationService;
 import dev.px.core.module.CategoryRegistry;
@@ -83,6 +84,7 @@ public final class Core {
     private final SocialService socialService;
     private final AccountService accountService;
     private final IntegrationService integrationService;
+    private final HudService hudService;
 
     private boolean started;
 
@@ -111,6 +113,7 @@ public final class Core {
         this.moduleRegistry = new ModuleRegistry(categories, bus);
         this.commandRegistry = services.register(new CommandRegistry(bus, platform, logger));
         this.inputService = services.register(new InputService(bus, moduleRegistry, platform));
+        this.hudService = services.register(new HudService(logger, bus, platform));
 
         ThreadedModule.bindThreadService(threadService);
 
@@ -135,6 +138,8 @@ public final class Core {
         registerConfigSections();
 
         Render.setDefaultFont(fontService.getDefaultFont());
+        // The editor outlines selections in the active accent colour.
+        hudService.getEditor().setAccent(themeService::getPrimary);
 
         // Defaults first, then the config, so a saved profile overrides them rather
         // than the other way round.
@@ -171,6 +176,7 @@ public final class Core {
         configService.register(new SettingsSection("commands", commandRegistry.getPrefix()));
         configService.register(socialService);
         configService.register(accountService);
+        configService.register(hudService);
     }
 
     // ------------------------------------------------------- static access
@@ -233,6 +239,10 @@ public final class Core {
 
     public static IntegrationService integrations() {
         return get().integrationService;
+    }
+
+    public static HudService hud() {
+        return get().hudService;
     }
 
     public static Platform platform() {

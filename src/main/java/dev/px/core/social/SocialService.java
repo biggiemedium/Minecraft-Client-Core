@@ -98,9 +98,7 @@ public final class SocialService implements Service, ConfigSection {
             return;
         }
         // Replace wholesale: a loaded profile defines the list rather than adding to it.
-        for (Friend existing : friends.all()) {
-            friends.unregister(existing);
-        }
+        friends.clear();
         for (JsonElement element : json.getAsJsonArray("entries")) {
             if (!element.isJsonObject()) {
                 continue;

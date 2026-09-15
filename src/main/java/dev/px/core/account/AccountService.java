@@ -134,9 +134,8 @@ public final class AccountService implements Service, ConfigSection {
         if (!json.has("entries") || !json.get("entries").isJsonArray()) {
             return;
         }
-        for (Account existing : accounts.all()) {
-            accounts.unregister(existing);
-        }
+        // Replace wholesale: a loaded profile defines the list rather than adding to it.
+        accounts.clear();
         for (JsonElement element : json.getAsJsonArray("entries")) {
             if (!element.isJsonObject()) {
                 continue;

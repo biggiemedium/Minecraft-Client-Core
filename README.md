@@ -242,13 +242,113 @@ Render.rect(x, y, w, h, base.lerp(accent, hover.get()));
 
 ---
 
-## 6. Package map
+## 6. HUD elements
+
+An element answers two questions — how big am I, and how do I draw myself. The
+layout engine handles everything else.
+
+```java
+public final class ClockElement extends AbstractHudElement {
+
+    private final BooleanSetting seconds = bool("Show Seconds", true);
+    private final ColorSetting   colour  = color("Colour", Color.WHITE);
+
+    public ClockElement() {
+        super("clock", "Clock", HudLayout.at(Anchor.TOP_RIGHT, -4f, 4f));
+    }
+
+    @Override public Size getPreferredSize() {
+        return Size.of(Render.textWidth(text()) + 6f, Render.textHeight() + 4f);
+    }
+
+    @Override public void render(float x, float y, float w, float h) {
+        Render.roundRect(x, y, w, h, 3f, Core.themes().getSurface());
+        Render.text(text(), x + 3f, y + 2f, colour.resolve());
+    }
+
+    private String text() {
+        // Frozen sample while positioning, so the box does not resize under the cursor.
+        return isEditing() ? "12:00:00" : LocalTime.now().format(seconds.isOn() ? LONG : SHORT);
+    }
+}
+```
+
+```java
+Core.hud().registerAll(new ClockElement(), new WatermarkElement());
+Core.hud().openEditor();
+```
+
+An element with no settings can implement `HudElement` directly instead of
+extending `AbstractHudElement`.
+
+**Preferred size may change every frame** — that is the normal case, not an edge
+case. Nothing caches it.
+
+### Position is an anchor plus an offset
+
+Never absolute coordinates. `x = ax * screenW + offsetX - ax * width`, where
+`ax` is 0, 0.5 or 1. That one formula gives you, with no special-casing anywhere:
+
+| | |
+|---|---|
+| Resolution changes | a bottom-right element stays bottom-right |
+| Growth direction | right-anchored grows left, bottom grows up, centre grows both ways |
+| Edge gaps | an offset means "distance from my anchor", which is what users mean |
+
+Bounds are clamped so at least 8px stays on screen — an element may bleed off an
+edge, but never so far it cannot be grabbed again. Clamping never writes back to
+the layout, so briefly shrinking the window does not permanently move a HUD.
+
+### Three geometries, kept separate
+
+| Geometry | What it is | Type |
+|---|---|---|
+| Layout | position and occupied space | `Bounds` |
+| Visual | what actually gets drawn | the element's `render()` |
+| Interaction | what responds to clicks | `Shape` |
+
+Simple elements make all three identical — `getShape()` returns a rectangle by
+default. Override it when they differ, and a circular element stops having a
+rectangular hitbox:
+
+```java
+@Override public Shape getShape(float x, float y, float w, float h) {
+    return Shape.circle(x + w / 2f, y + h / 2f, w / 2f);
+}
+```
+
+`Shape` also strokes itself, so the editor's selection outline traces circles and
+polygons correctly without ever switching on shape type. `Shape.rect`,
+`roundRect`, `circle` and `polygon` are built in; a new one works in the editor
+the day it is written.
+
+Everything above is in **natural, unscaled** coordinates. An element's scale
+factor is applied as a transform around it, so an element that never mentions
+scale is automatically scalable.
+
+### Edit mode
+
+`HudEditor` subscribes to Core's `MouseEvent` / `KeyEvent` / `ScrollEvent` at
+`Priority.HIGHEST` and cancels every one while open — that cancellation *is* how
+input is swallowed, so nothing behind the editor can fire. The adapter just posts
+the events its screen already receives.
+
+Select and drag to move; scroll or drag a corner handle to scale; snapping to
+screen edges and centre with guides, suspended while `ALT` is held. Per element:
+lock, hide, z-order, reset — all reversible, all available as methods
+(`editor.toggleLockSelected()`, `bringSelectedToFront()`, `resetSelected()`) as
+well as keys.
+
+---
+
+## 7. Package map
 
 | Package | What it is |
 |---|---|
 | `event` / `event.bus` / `event.impl` | Bases, `@Subscribe`, the bus, built-in events |
 | `module` | `Module`, `@ModuleInfo`, `Category`, `ModuleRegistry`, `ThreadedModule` (a module whose work runs off the game thread) |
 | `setting` / `setting.impl` | Settings, auto-discovery, the nine types |
+| `hud` | HUD layout and edit mode: `HudElement`, `Anchor`, `Shape`, `Bounds`, `HudLayout`, `HudService`, `HudEditor` |
 | `registry` | Generic `Registry<T>` — one class replacing four hand-written managers |
 | `service` | `Service` + `ServiceContainer`: subsystems declare `dependsOn()`, Core orders startup and shuts down in reverse |
 | `config` | JSON profiles. A `ConfigSection` is one block of the file; add your own to persist anything |
@@ -268,7 +368,7 @@ Render.rect(x, y, w, h, base.lerp(accent, hover.get()));
 
 ---
 
-## 7. What your adapter must supply
+## 8. What your adapter must supply
 
 1. **`Platform`** — data dir, screen metrics, chat, username, in-game flag
 2. **`Render2D`** — your 2D library
@@ -280,16 +380,41 @@ Optional: `AuthProvider` (alt manager), `PresenceProvider` / `MediaProvider`.
 
 ---
 
-## 8. Verifying
+## 9. Verifying
 
-`src/test/java/dev/px/core/CoreSmokeTest.java` boots Core against a fake
-`Platform` and runs 38 checks — registration, setting coercion, handler priority
-and stage filtering, keybinds, command dispatch, config round-tripping — with no
-game involved. If it passes, Core is sound.
+`dev.px.core.test.CoreSmokeTest` runs **327 checks** in a plain JVM — no
+Minecraft, no window, no GL context, no render backend, no font. If a check ever
+needs a game to pass, the abstraction has leaked.
+
+```
+src/test/java/dev/px/core/test/
+├── CoreSmokeTest.java     runs every suite
+├── harness/               Checks, FakePlatform, TestClient (also the bootstrap example)
+├── example/               reference modules, commands and HUD elements
+└── suite/                 one file per subsystem
+```
+
+| Suite | Covers |
+|---|---|
+| `RegistryTests` | lookup, duplicate rejection, hooks, `clear()` |
+| `ShapeTests` | containment and scaling for rect / round-rect / circle / concave polygon |
+| `ServiceTests` | dependency ordering, cycles, missing deps, failed startup |
+| `EventTests` | priority, stage, cancellation, supertype dispatch, listening gate |
+| `SettingTests` | every type: coercion, visibility, change events, JSON round-trip |
+| `ModuleTests` | annotation identity, category resolution, toggle lifecycle, keybinds |
+| `CommandTests` | dispatch, aliases, typed args, error messages, completion, prefix |
+| `HudLayoutTests` | all nine anchors, four resolutions, growth, clamping, z-order |
+| `HudEditorTests` | shape-aware selection, drag, snapping, lock, handles, input gate |
+| `ConfigTests` | full round-trip, profiles, second-load regression, path sanitising |
+
+The `example/` package is written to be read: it is what a real client's modules,
+commands and HUD elements look like, and `TestClient.boot()` is the canonical
+bootstrap minus the render backends.
 
 ---
 
 ## Not yet included
 
-- **GUI framework** — screens, component tree, input routing, HUD elements.
+- **GUI framework** — screens, component tree, widgets. The HUD editor has its
+  own input handling and does not depend on it.
 - **Adapter layer** — `Player`, `World`, `Entity`, packet wrappers.
