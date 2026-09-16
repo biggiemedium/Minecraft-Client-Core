@@ -7,11 +7,14 @@ import dev.px.core.test.suite.ConfigTests;
 import dev.px.core.test.suite.EventTests;
 import dev.px.core.test.suite.HudEditorTests;
 import dev.px.core.test.suite.HudLayoutTests;
+import dev.px.core.test.suite.MathTests;
 import dev.px.core.test.suite.ModuleTests;
 import dev.px.core.test.suite.RegistryTests;
 import dev.px.core.test.suite.ServiceTests;
 import dev.px.core.test.suite.SettingTests;
 import dev.px.core.test.suite.ShapeTests;
+import dev.px.core.test.suite.SpatialTests;
+import dev.px.core.test.suite.UtilTests;
 
 /**
  * Runs every suite against one booted client.
@@ -40,6 +43,9 @@ public final class CoreSmokeTest {
         // Standalone suites: pure logic, no client needed.
         RegistryTests.run();
         ShapeTests.run();
+        MathTests.run();
+        UtilTests.run();
+        SpatialTests.run();
 
         TestClient client = TestClient.boot();
 

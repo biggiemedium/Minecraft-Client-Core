@@ -459,13 +459,32 @@ a screen corner and there would be no room.
 | `render.font` | `Font` measuring + `FontProvider` (your backend loads the TTF) |
 | `render.theme` | `Theme` = two accent colours plus derived roles; `ThemeService` holds radius / opacity / text colour |
 | `render.animation` | `Easing` (22 curves) and time-based `Animation` |
-| `math` | `Vec2`, `Vec3`, `Box`, `Range`, `MathUtil`, `Stopwatch` (cooldowns) |
+| `math` | `Vec2`, `Vec3`, `Vec3i` (the block grid), `Direction`, `Box`, `Range`, `MathUtil`, `Stopwatch` (cooldowns) |
+| `util` | `Validate`, `Reflect`, `CoreLogger` / `ConsoleLogger` |
+| `util.collect` | `Pair`, `Triplet`, `CircularQueue` / `CircularDeque` (bounded histories that never grow), `RollingAverage` (allocation-free smoothing for FPS / ping / CPS), `LruCache` / `ExpiringCache` (bounded by size and by age), `Trie` (prefix completion), `WeightedList` |
+| `util.math` | `MovementMath` (input to motion, BPS, fall prediction), `RotationMath` (look vectors, angular distance, stepped turning, mouse-sensitivity snapping), `Curves` (Bézier and Catmull-Rom), `Statistics` |
+| `util.time` | `TickTimer` (server ticks, not wall clock), `Profiler` (which part of the frame is slow) |
+| `util.spatial` | Algorithms over 3D space that never learn what a block is: `AStar` + `PathSpace` (the two-method SPI your adapter implements) + `Path`, `VoxelRay` (Amanatides–Woo grid traversal), `FloodFill` (enclosure and connected regions), `SpatialGrid` (range queries without scanning everything) |
+| `util.render` | `ColorUtil` (rainbow, pulse, HSB the other way, health colours, RGBA packing), `Gradient` (multi-stop ramp) |
+| `util.text` | `TextUtil` (labels, durations, byte counts, roman numerals, "did you mean"), `ChatColor` (the section-sign codes) |
+| `util.net` | `Http` — blocking one-shot GET/POST for update checks and small APIs. Run it on `ThreadService` |
 | `notification` | On-screen toast queue. Core owns the lifecycle; you draw them |
 | `concurrent` | `ThreadService` — named daemon pool; task exceptions are logged, not swallowed |
 | `social` | Friends list, consulted by targeting / nametags / chat |
 | `account` | Alt manager. `AuthProvider` is the SPI you implement for Microsoft login |
 | `integration` | Optional external hooks: **Discord Rich Presence** (`PresenceProvider`) and **now-playing / Spotify** (`MediaProvider`). Both polled off-thread; absent providers are simply inert |
 | `platform` | The narrow game seam: data directory, screen size, chat, username, in-game flag. **Not** the adapter layer — no player, world, entity, or packets |
+
+`math` and `render` hold the value types Core is built out of — `Vec3`, `Vec3i`,
+`Box`, `Color`. `util.math` and `util.render` hold helpers built *on* those types,
+which is why they are one level down: nothing in `util` is part of Core's
+vocabulary, and deleting any of it would not stop Core from booting.
+
+`util.spatial` is where that separation earns its keep. A pathfinder, a raycast
+and a flood fill all need to ask the world questions, and none of them needs to
+know the answers come from a world: `PathSpace` is two methods, `VoxelRay` and
+`FloodFill` take a predicate. Your adapter supplies those, the algorithms stay
+here, and the whole package is tested against mazes written as string literals.
 
 ---
 
@@ -482,7 +501,9 @@ a screen corner and there would be no room.
    `Core.hud().closeEditor()` when dismissed. Core draws the HUD and the editor
    overlay itself from `Render2DEvent`.
 
-Optional: `AuthProvider` (alt manager), `PresenceProvider` / `MediaProvider`.
+Optional: `AuthProvider` (alt manager), `PresenceProvider` / `MediaProvider`, and
+`PathSpace` if you use `util.spatial` — one lambda saying which cells your agent
+can occupy is enough to run `AStar` against your world.
 
 Core runs headless without any of these. The test suite boots it with none
 installed, which is how the seam stays honest.
@@ -491,7 +512,7 @@ installed, which is how the seam stays honest.
 
 ## 9. Verifying
 
-`dev.px.core.test.CoreSmokeTest` runs **327 checks** in a plain JVM — no
+`dev.px.core.test.CoreSmokeTest` runs **676 checks** in a plain JVM — no
 Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
@@ -507,6 +528,9 @@ src/test/java/dev/px/core/test/
 |---|---|
 | `RegistryTests` | lookup, duplicate rejection, hooks, `clear()` |
 | `ShapeTests` | containment and scaling for rect / round-rect / circle / concave polygon |
+| `MathTests` | grid positions and packing, directions, curves, statistics |
+| `UtilTests` | ring buffers and eviction, LRU and TTL caches, prefix completion, weighted draws, movement and rotation maths, tick timers, profiling, colour conversion, gradients, text and chat codes |
+| `SpatialTests` | range queries against a brute-force scan, voxel traversal order and faces, enclosure detection, A* through hand-drawn mazes |
 | `ServiceTests` | dependency ordering, cycles, missing deps, failed startup |
 | `EventTests` | priority, stage, cancellation, supertype dispatch, listening gate |
 | `SettingTests` | every type: coercion, visibility, change events, JSON round-trip |

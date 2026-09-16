@@ -3,11 +3,11 @@ package dev.px.core.setting.impl;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonPrimitive;
 import dev.px.core.setting.Setting;
+import dev.px.core.util.text.TextUtil;
 import lombok.Getter;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -28,8 +28,8 @@ public final class EnumSetting<E extends Enum<E>> extends Setting<E> {
     private final Class<E> type;
     private final List<E> options;
 
-    /** How an option is labelled. Defaults to Title Case of the constant name. */
-    private Function<E, String> labeller = EnumSetting::prettify;
+    /** How an option is labelled. Defaults to Title Case: SOME_MODE reads as "Some Mode". */
+    private Function<E, String> labeller = TextUtil::prettify;
 
     public EnumSetting(String name, E defaultValue) {
         super(name, defaultValue);
@@ -99,22 +99,6 @@ public final class EnumSetting<E extends Enum<E>> extends Setting<E> {
     @Override
     public String displayValue() {
         return labelOf(get());
-    }
-
-    /** SOME_MODE becomes "Some Mode". */
-    private static String prettify(Enum<?> option) {
-        String[] words = option.name().toLowerCase(Locale.ROOT).split("_");
-        StringBuilder text = new StringBuilder();
-        for (String word : words) {
-            if (word.isEmpty()) {
-                continue;
-            }
-            if (text.length() > 0) {
-                text.append(' ');
-            }
-            text.append(Character.toUpperCase(word.charAt(0))).append(word.substring(1));
-        }
-        return text.toString();
     }
 
     @Override

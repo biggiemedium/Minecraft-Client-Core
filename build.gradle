@@ -30,6 +30,11 @@ dependencies {
 
     testCompileOnly 'org.projectlombok:lombok:1.18.30'
     testAnnotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+    // The test suite uses Gson directly (SettingTests round-trips settings) and
+    // runs with no Minecraft to supply it, so tests need it for real -- compileOnly
+    // above does not reach the test classpaths.
+    testImplementation 'com.google.code.gson:gson:2.8.9'
 }
 
 tasks.withType(JavaCompile) {
