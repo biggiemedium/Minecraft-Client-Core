@@ -9,6 +9,7 @@ import dev.px.core.config.ToggleableSection;
 import dev.px.core.event.EventBus;
 import dev.px.core.event.bus.CoreEventBus;
 import dev.px.core.event.impl.ClientLifecycleEvent;
+import dev.px.core.gui.GuiService;
 import dev.px.core.hud.HudService;
 import dev.px.core.input.InputService;
 import dev.px.core.integration.IntegrationService;
@@ -85,6 +86,7 @@ public final class Core {
     private final AccountService accountService;
     private final IntegrationService integrationService;
     private final HudService hudService;
+    private final GuiService guiService;
 
     private boolean started;
 
@@ -114,6 +116,8 @@ public final class Core {
         this.commandRegistry = services.register(new CommandRegistry(bus, platform, logger));
         this.inputService = services.register(new InputService(bus, moduleRegistry, platform));
         this.hudService = services.register(new HudService(logger, bus, platform));
+        this.guiService = services.register(
+                new GuiService(logger, bus, platform, moduleRegistry, categories, themeService));
 
         ThreadedModule.bindThreadService(threadService);
 
@@ -177,6 +181,7 @@ public final class Core {
         configService.register(socialService);
         configService.register(accountService);
         configService.register(hudService);
+        configService.register(guiService);
     }
 
     // ------------------------------------------------------- static access
@@ -243,6 +248,10 @@ public final class Core {
 
     public static HudService hud() {
         return get().hudService;
+    }
+
+    public static GuiService gui() {
+        return get().guiService;
     }
 
     public static Platform platform() {

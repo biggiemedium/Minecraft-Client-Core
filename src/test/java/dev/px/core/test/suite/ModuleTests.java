@@ -6,8 +6,11 @@ import dev.px.core.event.impl.TickEvent;
 import dev.px.core.input.Bind;
 import dev.px.core.input.Key;
 import dev.px.core.input.Modifier;
+import dev.px.core.math.Vec2;
+import dev.px.core.math.Vec3;
 import dev.px.core.module.Module;
 import dev.px.core.module.ModuleToggleEvent;
+import dev.px.core.util.math.RotationMath;
 import dev.px.core.test.example.ExampleCategories;
 import dev.px.core.test.example.ExampleKillAura;
 import dev.px.core.test.example.ExampleSprint;
@@ -87,6 +90,60 @@ public final class ModuleTests {
                 1f, aura.getPreTicks());
         Checks.check("the module is subscribed throughout",
                 client.getCore().getBus().isSubscribed(aura));
+
+        // ---- the decision a module actually computes ---------------------------------
+        // Core has no entity, so the target is handed in. Everything after that
+        // is real: a reach gate, a solved rotation, and a turn traced over ticks.
+        aura.resetCounters();
+        aura.enable();
+
+        Vec3 eye = Vec3.of(0d, 0d, 0d);
+        Vec3 behind = Vec3.of(0d, 0d, -3d);          // directly north, 180 degrees away
+        Vec2 wanted = eye.rotationTo(behind);
+
+        aura.getRotationMode().set(ExampleKillAura.RotationMode.SMOOTH);
+        aura.aimAt(eye, behind);
+        client.getCore().getBus().post(new TickEvent(Stage.PRE));
+        // 180 degrees away, so one 30-degree step must leave exactly 150 to go.
+        // Snapping straight onto the target is the bug this pins down.
+        Checks.checkEquals("a smooth turn moves one step per tick, no more", 150f,
+                RotationMath.difference(aura.getAim(), wanted));
+
+        for (int tick = 0; tick < 12; tick++) {
+            client.getCore().getBus().post(new TickEvent(Stage.PRE));
+        }
+        Checks.check("a smooth turn converges on the target",
+                RotationMath.difference(aura.getAim(), wanted) < 1f);
+
+        // Out of reach: the head must not move, however close the aim already is.
+        aura.resetCounters();
+        aura.aimAt(eye, Vec3.of(0d, 0d, -50d));
+        client.getCore().getBus().post(new TickEvent(Stage.PRE));
+        Checks.checkEquals("a target beyond reach moves nothing",
+                Vec2.rotation(0f, 0f), aura.getAim());
+        Checks.checkEquals("and is never attacked", 0, aura.getAttacks());
+
+        // INSTANT is the other half of that distinction: one tick, fully turned.
+        aura.resetCounters();
+        aura.getRotationMode().set(ExampleKillAura.RotationMode.INSTANT);
+        aura.aimAt(eye, behind);
+        client.getCore().getBus().post(new TickEvent(Stage.PRE));
+        Checks.checkEquals("an instant turn arrives in one tick", 0f,
+                RotationMath.difference(aura.getAim(), wanted));
+        aura.getRotationMode().set(ExampleKillAura.RotationMode.SMOOTH);
+
+        // The timer paces the attacks; a burst of ticks is not a burst of swings.
+        aura.resetCounters();
+        aura.aimAt(eye, behind);
+        for (int tick = 0; tick < 50; tick++) {
+            client.getCore().getBus().post(new TickEvent(Stage.PRE));
+        }
+        Checks.check("attacks are paced by CPS, not fired once per tick (" + aura.getAttacks() + ")",
+                aura.getAttacks() < 5);
+
+        aura.disable();
+        Checks.check("disabling drops the target", aura.getTargetPosition() == null);
+        aura.resetCounters();
 
         // ---- keybinds ---------------------------------------------------------------
         aura.getKeybind().set(Bind.of(Key.R, Modifier.SHIFT));

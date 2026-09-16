@@ -5,6 +5,7 @@ import dev.px.core.test.harness.TestClient;
 import dev.px.core.test.suite.CommandTests;
 import dev.px.core.test.suite.ConfigTests;
 import dev.px.core.test.suite.EventTests;
+import dev.px.core.test.suite.GuiTests;
 import dev.px.core.test.suite.HudEditorTests;
 import dev.px.core.test.suite.HudLayoutTests;
 import dev.px.core.test.suite.MathTests;
@@ -53,6 +54,7 @@ public final class CoreSmokeTest {
         EventTests.run(client);
         SettingTests.run(client);
         ModuleTests.run(client);
+        GuiTests.run(client);
         CommandTests.run(client);
         HudLayoutTests.run(client);
         HudEditorTests.run(client);

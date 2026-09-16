@@ -5,6 +5,8 @@ import dev.px.core.event.Stage;
 import dev.px.core.event.Subscribe;
 import dev.px.core.event.impl.TickEvent;
 import dev.px.core.math.Stopwatch;
+import dev.px.core.math.Vec2;
+import dev.px.core.math.Vec3;
 import dev.px.core.module.Module;
 import dev.px.core.module.ModuleInfo;
 import dev.px.core.render.Color;
@@ -16,6 +18,7 @@ import dev.px.core.setting.impl.MultiEnumSetting;
 import dev.px.core.setting.impl.NumberSetting;
 import dev.px.core.setting.impl.RangeSetting;
 import dev.px.core.setting.impl.StringSetting;
+import dev.px.core.util.math.RotationMath;
 import lombok.Getter;
 
 /**
@@ -24,6 +27,12 @@ import lombok.Getter;
  * <p>Written as a reference: this is what a real combat module looks like once
  * the boilerplate is gone. Everything below the annotation is either a setting
  * declaration or actual behaviour.
+ *
+ * <p>The aim it computes is real: a reach gate, a rotation solved with
+ * {@link Vec3#rotationTo}, and a turn traced out over several ticks by
+ * {@link RotationMath#step}. What it cannot do is find a target or swing at one
+ * &mdash; Core has no entity type, so the adapter supplies the two positions
+ * through {@link #aimAt} and performs the attack this module only counts.
  *
  * <p>The counters exist only so the test suite can assert dispatch order and the
  * listening gate; a real module would not have them.
@@ -34,6 +43,9 @@ import lombok.Getter;
         description = "Attacks nearby targets",
         category = "Combat")
 public final class ExampleKillAura extends Module {
+
+    /** How far the aim may travel in one tick, in degrees. */
+    private static final float MAX_STEP = 30f;
 
     // ---- simple values ---------------------------------------------------
     private final NumberSetting<Float> reach = number("Reach", 4f, 3f, 6f)
@@ -69,6 +81,15 @@ public final class ExampleKillAura extends Module {
 
     private final Stopwatch attackTimer = Stopwatch.expired();
 
+    // ---- what the adapter feeds in ----------------------------------------
+    private Vec3 eyePosition = Vec3.ZERO;
+    private Vec3 targetPosition;
+
+    // ---- what the module decides ------------------------------------------
+    private Vec2 aim = Vec2.rotation(0f, 0f);
+    private boolean aimAcquired;
+    private int attacks;
+
     // ---- observable state, for the suite ----------------------------------
     private int preTicks;
     private int postTicks;
@@ -88,6 +109,24 @@ public final class ExampleKillAura extends Module {
     @Override
     protected void onDisable() {
         disableCount++;
+        clearTarget();
+    }
+
+    /**
+     * Points the module at something.
+     *
+     * <p>Stands in for the adapter: in a real client these two positions come
+     * from the player and the chosen entity, neither of which Core knows about.
+     */
+    public void aimAt(Vec3 eye, Vec3 target) {
+        this.eyePosition = eye;
+        this.targetPosition = target;
+    }
+
+    /** Drops the target, so the next tick decides nothing. */
+    public void clearTarget() {
+        this.targetPosition = null;
+        this.aimAcquired = false;
     }
 
     /**
@@ -98,9 +137,33 @@ public final class ExampleKillAura extends Module {
     private void onPreTick(TickEvent event) {
         highPriorityRan = true;
         preTicks++;
+
+        // No target, or one out of range: nothing to decide. Reach is checked
+        // before the rotation so an unreachable target never moves the head.
+        if (targetPosition == null
+                || eyePosition.distanceTo(targetPosition) > reach.getFloat()) {
+            return;
+        }
+
+        if (rotations.isOn()) {
+            Vec2 wanted = eyePosition.rotationTo(targetPosition);
+            if (rotationMode.is(RotationMode.INSTANT)) {
+                aim = RotationMath.normalize(wanted);
+            } else if (rotationMode.is(RotationMode.SMOOTH)) {
+                // Traced out over several ticks rather than snapped, which is
+                // both what a hand does and what a server expects to see.
+                aim = RotationMath.step(aim, wanted, MAX_STEP);
+            } else if (!aimAcquired) {
+                // LOCKED takes the target once and then holds still.
+                aim = RotationMath.normalize(wanted);
+            }
+            aimAcquired = true;
+        }
+
+        // tryConsume resets on success, so the delay paces the attacks by itself.
         if (attackTimer.tryConsume(1000L / Math.max(1, cps.randomInt()))) {
-            // attack(target) in a real client
-            attackTimer.reset();
+            // Where a real client would swing. Core cannot: it has no entity.
+            attacks++;
         }
     }
 
@@ -135,6 +198,10 @@ public final class ExampleKillAura extends Module {
         everyTick = 0;
         highPriorityRan = false;
         highPriorityRanFirst = false;
+        attacks = 0;
+        aim = Vec2.rotation(0f, 0f);
+        eyePosition = Vec3.ZERO;
+        clearTarget();
     }
 
     public enum RotationMode { INSTANT, SMOOTH, LOCKED }

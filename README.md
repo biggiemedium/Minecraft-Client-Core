@@ -1,13 +1,13 @@
 # Core
 
 The version-independent half of a Minecraft utility client: event bus, modules,
-settings, config, commands, input, services, a pluggable render facade, and a
-HUD layout engine with an edit mode.
+settings, config, commands, input, services, a pluggable render facade, a HUD
+layout engine with an edit mode, and a click GUI.
 
 Core has **no Minecraft on its classpath** — this project compiles standalone,
 which proves there is no `net.minecraft` import hiding in it. Copy
 `src/main/java/dev/px/core` into a project for any version and start writing
-modules and HUD elements.
+modules, HUD elements and screens.
 
 **Requires:** Java 8, Lombok (compile-time only), Gson (already ships with
 Minecraft). On ForgeGradle 2.x (1.8.9), which predates the `annotationProcessor`
@@ -46,6 +46,7 @@ Afterwards everything is reachable statically:
 Core.modules().get(KillAura.class);
 Core.notifications().success("Config", "Saved");
 Core.themes().getPrimary();
+Core.gui().toggleClickGui();
 Core.bus().post(new PlayerMoveEvent(x, y, z));
 ```
 
@@ -80,22 +81,28 @@ public final class KillAura extends Module {
     private final ColorSetting         hitbox = color("Hitbox", Color.RED);
 
     private final Stopwatch attackTimer = Stopwatch.expired();
-    private Entity target;
+
+    // Core has no entity type, so the two positions come from your adapter.
+    private Vec3 eye;
+    private Vec3 target;
+    private Vec2 aim = Vec2.rotation(0f, 0f);
 
     @Subscribe(stage = Stage.PRE, priority = Priority.HIGH)
-    private void onMotion(PlayerMotionEvent event) {
-        if (target == null) return;
-        event.setYaw(rotationTo(target).getYaw());
+    private void onTick(TickEvent event) {
+        if (target == null || eye.distanceTo(target) > reach.getFloat()) return;
+
+        aim = RotationMath.step(aim, eye.rotationTo(target), 30f);
+        applyRotation(aim);                                      // yours
 
         if (attackTimer.tryConsume(1000 / cps.randomInt())) {    // randomised delay
-            attack(target);
+            attack();                                            // yours
         }
     }
 
     @Subscribe
     private void onRender3D(Render3DEvent event) {
         if (target != null) {
-            Render.boxOutline(boxOf(target), 1.5f, hitbox.resolve());
+            Render.boxOutline(Box.around(target, 0.6d, 1.8d), 1.5f, hitbox.resolve());
         }
     }
 
@@ -108,6 +115,13 @@ public final class KillAura extends Module {
     public enum Target { PLAYERS, MOBS, ANIMALS, INVISIBLES }
 }
 ```
+
+Everything above compiles against Core except the two lines marked `// yours`:
+finding a target and swinging at one need the game, and Core has no entity type
+— see §9. Everything else is real API: `Vec3.rotationTo` solves the rotation,
+`RotationMath.step` traces the turn out over several ticks instead of snapping,
+and `Box.around` builds the hitbox to outline. `ExampleKillAura` in the test
+suite is this module, running headless.
 
 Reading settings at the use site:
 
@@ -442,7 +456,323 @@ a screen corner and there would be no room.
 
 ---
 
-## 7. Package map
+## 7. The GUI
+
+A click GUI, and the pieces it is made of. Open it and you get a window per
+category, a button per module, and a row per setting — every setting type
+editable, and the values persisted by the ordinary config mechanism because they
+are ordinary settings.
+
+It is deliberately **not** a general widget kit. It was built downward from the
+click GUI, so a component exists only because that screen needs it. There is no
+layout engine beyond "a panel stacks its children", no flexbox, no constraint
+solver, and no screen stack — `GuiService` shows one screen or none.
+
+### Opening it
+
+```java
+Core.gui().openClickGui();
+Core.gui().open(new MyScreen());   // any screen; replaces whatever was showing
+Core.gui().close();
+```
+
+Core draws the screen itself from `Render2DEvent`. What your adapter supplies is
+a bare game screen that posts input and closes on dismissal — the same contract
+the HUD editor has in §6, one class can serve both:
+
+```java
+public final class CoreGuiScreen extends GuiScreen {
+
+    @Override protected void mouseClicked(int x, int y, int button) {
+        Core.bus().post(new MouseEvent(MouseButton.byIndex(button), mods(), true, x, y));
+    }
+
+    @Override protected void mouseReleased(int x, int y, int button) {
+        Core.bus().post(new MouseEvent(MouseButton.byIndex(button), mods(), false, x, y));
+    }
+
+    @Override protected void keyTyped(char typed, int code) {
+        Core.bus().post(new KeyEvent(Keys.fromLwjgl(code), mods(), true));
+        // Text fields need the character the layout produced, not the physical key.
+        if (typed >= ' ' && typed != 127) {
+            Core.bus().post(new CharTypedEvent(typed));
+        }
+    }
+
+    @Override public void handleMouseInput() throws IOException {
+        super.handleMouseInput();
+        int wheel = Mouse.getDWheel();
+        if (wheel != 0) {
+            Core.bus().post(new ScrollEvent(Math.signum(wheel), mouseX(), mouseY()));
+        }
+    }
+
+    @Override public void onGuiClosed() { Core.gui().close(); }
+}
+```
+
+Bind it like anything else:
+
+```java
+Core.input().register("Click GUI", Bind.of(Key.RIGHT_SHIFT), () -> {
+    mc.displayGuiScreen(new CoreGuiScreen());
+    Core.gui().openClickGui();
+});
+```
+
+> That bind can only **open** the GUI. Every key is cancelled while a screen is
+> showing, including the one that opened it, so `Escape` is the way out — and a
+> focused text field or a capturing keybind button consumes it first, backing out
+> one level at a time.
+
+### A component
+
+Two methods, the same promise `HudElement` makes: how big you are, and how to
+draw yourself. Stacking, hit routing, drag tracking and focus are handled above
+you, so writing a component never means reading the layout or input code.
+
+```java
+public final class Divider extends Component {
+
+    @Override public float getPreferredHeight(float width) { return 1f; }
+
+    @Override public void render(float x, float y, float w, float h) {
+        Render.rect(x, y, w, h, GuiStyle.outline());
+    }
+}
+```
+
+Anything interactive adds one more method. `onClick` returns whether it consumed
+the press; returning false offers it to the parent, which is how a setting row
+that ignores a right-click lets the module button behind it decide instead:
+
+```java
+public final class Button extends Component {
+
+    private final String label;
+    private final Runnable action;
+    private final Animation hover = Animation.fade(120, Easing.QUAD_OUT);
+
+    public Button(String label, Runnable action) {
+        this.label = label;
+        this.action = action;
+    }
+
+    @Override public float getPreferredHeight(float width) { return GuiStyle.ROW_HEIGHT; }
+
+    @Override public void render(float x, float y, float w, float h) {
+        hover.target(getBounds().contains(Core.platform().getMouseX(),
+                                          Core.platform().getMouseY()));
+
+        Render.roundRect(x, y, w, h, GuiStyle.radius(w, h),
+                GuiStyle.surface().lerp(GuiStyle.accent(), hover.get()));
+        Render.text(label, x + GuiStyle.PADDING,
+                y + (h - Render.textHeight()) / 2f, GuiStyle.text());
+    }
+
+    @Override protected boolean onClick(float x, float y, MouseButton button) {
+        if (button != MouseButton.LEFT) {
+            return false;
+        }
+        action.run();
+        return true;
+    }
+
+    @Override public String getTooltip() { return "Runs " + label; }
+}
+```
+
+Children are drawn by the engine, not by you — `render()` draws the component
+itself and the visible children follow, which is what makes a panel background
+work. Everything else is opt-in:
+
+| Override | For |
+|---|---|
+| `onClick(x, y, button)` | a press that landed on you; return whether you consumed it |
+| `onDrag` / `onRelease` | after `getScreen().beginDrag(this)` |
+| `onKey` / `onChar` | delivered only while you hold focus; take it with `focus()` |
+| `onScroll(amount, x, y)` | the wheel, over you |
+| `shape(x, y, w, h)` | a non-rectangular clickable region |
+| `isVisible()` | whether you take part in layout, drawing and hit testing at all |
+| `showsChildren()` | whether your children do |
+| `getTooltip()` | text shown when the cursor rests on you |
+
+`Panel` is the stack, and the only layout there is: `headerHeight()` reserves room
+for your own drawing, `getPadding()` insets the children, `childIndent()` shifts
+them right. A panel whose visible children are all gone collapses to its header.
+
+### Three things share one answer
+
+Layout, drawing and hit testing all walk `visibleChildren()`, so they cannot
+disagree about whether a row exists. That is what makes everything collapsible
+work the same way and stay correct: a collapsed group, a closed dropdown and a
+minimised window all return false from `showsChildren()`, and a row hidden by
+`visibleWhen` returns false from `isVisible()`. In every case the row leaves
+layout, drawing and hit testing together — it can never be clicked through the
+gap it left behind.
+
+Hit testing is a `Shape`, the same one the HUD uses, so a round or triangular
+component gets the right clickable region by overriding one method, and
+containment is hierarchical: a point outside a parent never reaches its children.
+
+### A screen of your own
+
+A screen is a component that fills the display. It owns the two things only one
+component can hold at a time — keyboard focus and the in-flight drag — and
+otherwise gets out of the way. Place the children in `layoutChildren()`; that is
+the only method a screen has to implement.
+
+```java
+public final class ProfileScreen extends Screen {
+
+    private final Panel body = add(new Panel());
+
+    public ProfileScreen() {
+        super("Profiles");
+        body.setBackground(true);
+
+        for (String profile : Core.config().listProfiles()) {
+            body.add(new Button(profile, () -> Core.config().load(profile)));
+        }
+        body.add(new Divider());
+        body.add(new Button("Close", () -> Core.gui().close()));
+    }
+
+    /** Centred, a third of the way down. The panel measures its own height. */
+    @Override protected void layoutChildren() {
+        float width = GuiStyle.WINDOW_WIDTH * 1.5f;
+        body.layout((getScreenWidth() - width) / 2f, getScreenHeight() / 3f, width);
+    }
+
+    /** Dim the game behind it. Skip this and the screen draws over a live world. */
+    @Override public void render(float x, float y, float w, float h) {
+        Render.rect(0f, 0f, getScreenWidth(), getScreenHeight(), GuiStyle.backdrop());
+    }
+}
+```
+
+`add` returns the child, so a field can be declared and attached in one line.
+Override `onOpen` / `onClose` for state that must not survive a dismissal, and
+`save` / `load` to have `GuiService` persist something in the ordinary config —
+that is all the click GUI does to remember where its windows were dragged.
+
+### A setting renderer
+
+One per setting type, looked up through a `Registry`. Core ships nine, and adding
+a tenth needs no change to any file in `gui`:
+
+```java
+Core.gui().getRenderers().register(
+        SettingRenderer.of(WaypointSetting.class, WaypointRow::new));
+```
+
+A row extends `SettingComponent<S>`, which handles the three things every row
+does identically: visibility follows `visibleWhen`, the tooltip is the setting's
+`describe` text, and the header is one row high so it lines up with its
+neighbours. It also measures itself, so the only method a row must write is
+`render`. Replacing one of Core's is the same call with the built-in type:
+
+```java
+/** A stepper instead of a slider: click the left half to go down, the right to go up. */
+public final class StepperRow extends SettingComponent<NumberSetting<?>> {
+
+    public StepperRow(NumberSetting<?> setting) {
+        super(setting);
+    }
+
+    @Override public void render(float x, float y, float w, float h) {
+        renderRow(x, y, w, false);                              // the row background
+        renderLabel(x, y);                                      // the setting's name
+        renderValue(getSetting().displayValue(), x, y, w);      // right-aligned value
+    }
+
+    @Override protected boolean onClick(float pointerX, float pointerY, MouseButton button) {
+        if (button != MouseButton.LEFT) {
+            return false;
+        }
+        // progressAt turns a cursor position into a 0..1 fraction of this row.
+        boolean left = progressAt(pointerX, getBounds().getX(), getBounds().getWidth()) < 0.5f;
+        getSetting().setProgress(getSetting().progress() + (left ? -0.05f : 0.05f));
+        return true;
+    }
+}
+```
+
+```java
+Core.gui().getRenderers().register(
+        SettingRenderer.of(NumberSetting.class, (NumberSetting<?> s) -> new StepperRow(s)));
+```
+
+The row never clamps or steps the value itself: `setProgress` goes through the
+setting, which already enforces its own bounds and increment. That is why
+dragging past either end of a slider cannot produce an out-of-range number.
+
+`GroupSetting` renders its own children, which is why a module's panel is built
+from `getSettings()` rather than `getAllSettings()` — the flattened list would
+draw every nested setting twice.
+
+Two of the nine carry state beyond their value. A `BindSetting` row captures:
+click it, and the next key becomes the bind, with `Escape` clearing it rather
+than binding `Escape`. A `ColorSetting` row opens a picker with a
+saturation/brightness square, hue and alpha strips, and checkboxes for the
+rainbow and theme-sync modes the setting already supports — hiding the strips
+while either mode is on, since they no longer drive anything.
+
+### Where things register
+
+| What | When |
+|---|---|
+| Setting renderers | **before** `core.start()`, alongside modules and commands |
+| Screens | any time; `Core.gui().open(...)` takes one |
+| Anything after startup | call `Core.gui().rebuild()` |
+
+The click GUI is built at the end of `start()`, so a renderer registered before
+then is already in the rows. Registering one for a type Core also ships wins:
+the defaults fill the gaps and never overrule a claim, so replacing the slider is
+an ordinary `register` at the same point in the bootstrap as everything else. A
+module registered *after* startup, or a renderer swapped while the client runs,
+needs `Core.gui().rebuild()` — windows keep their positions across it.
+
+### Colours
+
+Every colour comes from `GuiStyle`, which reads the active `ThemeService` on each
+call rather than caching: a config load applies settings silently, so anything
+that cached a theme colour would draw the previous theme until the client
+restarted.
+
+```java
+GuiStyle.background();   GuiStyle.surface();   GuiStyle.backdrop();
+GuiStyle.accent();       GuiStyle.accent(0.5f);            // along the theme gradient
+GuiStyle.text();         GuiStyle.textMuted();   GuiStyle.outline();
+GuiStyle.radius(w, h);   // theme rounding, capped so it cannot exceed the shape
+```
+
+The metrics beside them — `ROW_HEIGHT`, `PADDING`, `SPACING`, `INDENT`,
+`WINDOW_WIDTH`, `TITLE_HEIGHT` — are the grid the whole GUI is laid out on. A
+component that invents its own row height stops lining up with every other
+component in the panel.
+
+### How input reaches a component
+
+`MouseEvent`, `KeyEvent`, `ScrollEvent` and `CharTypedEvent` are ordinary Core
+events, subscribed at `Priority.HIGHEST` and **cancelled** while a screen is
+open. That cancellation *is* how input is swallowed: consumed first, nothing
+behind the screen can fire, so no module toggles and no keystroke reaches the
+game while a text field has focus. Exactly what the HUD editor does.
+
+From there a press goes to the deepest component under the cursor and walks back
+up until one consumes it. Keys and characters go only to the focused component,
+which is whatever last called `focus()`; clicking anywhere else drops focus, and
+`onFocusLost()` is where a text field commits what was typed.
+
+Dragging follows the cursor from `Platform.getMouseX()` each frame rather than
+from a move event — there is no mouse-move event to bridge, the same as the HUD.
+A component starts one with `getScreen().beginDrag(this)` and then receives
+`onDrag(x, y)` every frame until the button comes up.
+
+---
+
+## 8. Package map
 
 | Package | What it is |
 |---|---|
@@ -450,6 +780,7 @@ a screen corner and there would be no room.
 | `module` | `Module`, `@ModuleInfo`, `Category`, `ModuleRegistry`, `ThreadedModule` (a module whose work runs off the game thread) |
 | `setting` / `setting.impl` | Settings, auto-discovery, the nine types |
 | `hud` | HUD layout and edit mode: `HudElement`, `Anchor`, `Shape`, `Bounds`, `HudLayout`, `HudService`, `HudEditor` |
+| `gui` / `gui.setting` / `gui.click` | The click GUI and the pieces it is built from: `Component`, `Panel`, `Screen`, `GuiService`, `GuiStyle`, the nine `SettingRenderer`s, and `ClickGuiScreen` |
 | `registry` | Generic `Registry<T>` — one class replacing four hand-written managers |
 | `service` | `Service` + `ServiceContainer`: subsystems declare `dependsOn()`, Core orders startup and shuts down in reverse |
 | `config` | JSON profiles. A `ConfigSection` is one block of the file; add your own to persist anything |
@@ -488,18 +819,21 @@ here, and the whole package is tested against mazes written as string literals.
 
 ---
 
-## 8. What your adapter must supply
+## 9. What your adapter must supply
 
 1. **`Platform`** — data dir, screen metrics, cursor, chat, username, in-game flag
 2. **`Render2D`** — your 2D library
 3. **`Render3D`** — world drawing and projection
 4. **`FontProvider`** — font loading for that backend
 5. **Event bridging** — post Core's events from your mixins. For the HUD editor
-   that means `MouseEvent`, `KeyEvent` and `ScrollEvent` from your editor screen;
-   `Platform.getMouseX()` covers dragging, so there is no move event to bridge.
-6. **A screen for the editor** — a bare `GuiScreen` that posts input and calls
-   `Core.hud().closeEditor()` when dismissed. Core draws the HUD and the editor
-   overlay itself from `Render2DEvent`.
+   that means `MouseEvent`, `KeyEvent` and `ScrollEvent` from your editor screen,
+   plus `CharTypedEvent` for the GUI's text fields; `Platform.getMouseX()` covers
+   dragging, so there is no move event to bridge.
+6. **A screen for the editor and the GUI** — a bare `GuiScreen` that posts input
+   and calls `Core.hud().closeEditor()` or `Core.gui().close()` when dismissed.
+   Core draws the HUD, the editor overlay and the GUI itself from
+   `Render2DEvent`. One screen class serves both, because they take input the
+   same way.
 
 Optional: `AuthProvider` (alt manager), `PresenceProvider` / `MediaProvider`, and
 `PathSpace` if you use `util.spatial` — one lambda saying which cells your agent
@@ -510,9 +844,9 @@ installed, which is how the seam stays honest.
 
 ---
 
-## 9. Verifying
+## 10. Verifying
 
-`dev.px.core.test.CoreSmokeTest` runs **676 checks** in a plain JVM — no
+`dev.px.core.test.CoreSmokeTest` runs **767 checks** in a plain JVM — no
 Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
@@ -538,6 +872,7 @@ src/test/java/dev/px/core/test/
 | `CommandTests` | dispatch, aliases, typed args, error messages, completion, prefix |
 | `HudLayoutTests` | all nine anchors, four resolutions, growth, clamping, z-order |
 | `HudEditorTests` | shape-aware selection, drag, snapping, lock, handles, input gate |
+| `GuiTests` | renderer lookup and replacement, tree structure, visibility gating, hit routing, every setting type edited through the GUI, the input gate, window persistence |
 | `ConfigTests` | full round-trip, profiles, second-load regression, path sanitising |
 
 The `example/` package is written to be read: it is what a real client's modules,
@@ -548,6 +883,4 @@ bootstrap minus the render backends.
 
 ## Not yet included
 
-- **GUI framework** — screens, component tree, widgets. The HUD editor has its
-  own input handling and does not depend on it.
 - **Adapter layer** — `Player`, `World`, `Entity`, packet wrappers.
