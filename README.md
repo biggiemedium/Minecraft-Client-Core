@@ -1,12 +1,13 @@
 # Core
 
 The version-independent half of a Minecraft utility client: event bus, modules,
-settings, config, commands, input, services, and a pluggable render facade.
+settings, config, commands, input, services, a pluggable render facade, and a
+HUD layout engine with an edit mode.
 
 Core has **no Minecraft on its classpath** — this project compiles standalone,
 which proves there is no `net.minecraft` import hiding in it. Copy
 `src/main/java/dev/px/core` into a project for any version and start writing
-modules.
+modules and HUD elements.
 
 **Requires:** Java 8, Lombok (compile-time only), Gson (already ships with
 Minecraft). On ForgeGradle 2.x (1.8.9), which predates the `annotationProcessor`
@@ -26,6 +27,7 @@ core.getCategories().registerAll(Categories.class);
 core.getThemeService().register(Theme.of("Froggy", Color.rgb(0xADF773), Color.rgb(0x80F393)));
 core.getModuleRegistry().registerAll(new KillAura(), new Sprint(), new Fullbright());
 core.getCommandRegistry().registerAll(new ToggleCommand());
+core.getHudService().registerAll(new WatermarkElement(), new ClockElement());
 
 Render.install(new NanoVGRender2D());       // your 2D library
 Render.install(new LegacyRender3D());       // world-space drawing
@@ -227,8 +229,11 @@ Vec2 screen = Render.worldToScreen(pos);        // null when behind the camera
 Render.clipped(x, y, w, h, () -> drawScrollingContent());
 ```
 
-Before a backend is installed, every call is a silent no-op — a module that
-draws during early startup is harmless.
+Before a backend is installed, every call is a silent no-op — a module or HUD
+element that draws during early startup is harmless. Text is the same: with no
+font installed, draws are dropped and `Render.textWidth(...)` returns 0, so an
+element can size itself from text before fonts load. `Render.hasFont()` reports
+it, and `FontService` warns once if no provider was installed at all.
 
 Animations are time-based, so a fade takes the same wall-clock time at 30 and
 240 FPS:
@@ -244,11 +249,41 @@ Render.rect(x, y, w, h, base.lerp(accent, hover.get()));
 
 ## 6. HUD elements
 
-An element answers two questions — how big am I, and how do I draw myself. The
-layout engine handles everything else.
+An element answers two questions — **how big am I** and **how do I draw myself**.
+Anchoring, scaling, clamping, z-order, hit testing, dragging and persistence are
+all handled above it. That is the whole contract, and it is deliberately the
+whole contract: adding an element type must never mean reading the layout engine.
+
+### The minimum
+
+No settings, no shape override — implement the interface directly:
+
+```java
+public final class WatermarkElement implements HudElement {
+
+    @Override public String getId() { return "watermark"; }
+
+    @Override public Size getPreferredSize() {
+        return Size.of(Render.textWidth("Core") + 8f, Render.textHeight() + 6f);
+    }
+
+    @Override public void render(float x, float y, float w, float h) {
+        Render.roundRect(x, y, w, h, 3f, Color.of(0, 0, 0, 120));
+        Render.text("Core", x + 4f, y + 3f, Color.WHITE);
+    }
+}
+```
+
+### With settings and a real shape
+
+Extend `AbstractHudElement` and settings register by declaration, exactly as on a
+module — persisted alongside the layout:
 
 ```java
 public final class ClockElement extends AbstractHudElement {
+
+    private static final float PADDING = 4f;
+    private static final float RADIUS  = 3f;
 
     private final BooleanSetting seconds = bool("Show Seconds", true);
     private final ColorSetting   colour  = color("Colour", Color.WHITE);
@@ -258,46 +293,64 @@ public final class ClockElement extends AbstractHudElement {
     }
 
     @Override public Size getPreferredSize() {
-        return Size.of(Render.textWidth(text()) + 6f, Render.textHeight() + 4f);
+        return Size.of(Render.textWidth(text()) + PADDING * 2f,
+                       Render.textHeight() + PADDING * 2f);
     }
 
     @Override public void render(float x, float y, float w, float h) {
-        Render.roundRect(x, y, w, h, 3f, Core.themes().getSurface());
-        Render.text(text(), x + 3f, y + 2f, colour.resolve());
+        Render.roundRect(x, y, w, h, RADIUS, Core.themes().getSurface());
+        Render.text(text(), x + PADDING, y + PADDING, colour.resolve());
+    }
+
+    /** Drawn rounded, so the hit region is rounded: the corner should miss. */
+    @Override public Shape getShape(float x, float y, float w, float h) {
+        return Shape.roundRect(x, y, w, h, RADIUS);
     }
 
     private String text() {
-        // Frozen sample while positioning, so the box does not resize under the cursor.
-        return isEditing() ? "12:00:00" : LocalTime.now().format(seconds.isOn() ? LONG : SHORT);
+        // A frozen sample while positioning, so the box does not resize under
+        // the cursor as the real clock advances.
+        if (isEditing()) return seconds.isOn() ? "12:00:00" : "12:00";
+        return LocalTime.now().format(seconds.isOn() ? LONG : SHORT);
     }
 }
 ```
 
+`isEditing()` is the edit-mode hook: branch at the point the data comes from, and
+everything else stays identical.
+
 ```java
-Core.hud().registerAll(new ClockElement(), new WatermarkElement());
-Core.hud().openEditor();
+Core.hud().registerAll(new WatermarkElement(), new ClockElement(), new DialElement());
 ```
 
-An element with no settings can implement `HudElement` directly instead of
-extending `AbstractHudElement`.
-
-**Preferred size may change every frame** — that is the normal case, not an edge
-case. Nothing caches it.
+**Preferred size may change every frame** — a clock is wider with seconds on, an
+ArrayList grows as modules toggle. That is the normal case, not an edge case.
+Nothing caches it.
 
 ### Position is an anchor plus an offset
 
-Never absolute coordinates. `x = ax * screenW + offsetX - ax * width`, where
-`ax` is 0, 0.5 or 1. That one formula gives you, with no special-casing anywhere:
+Never absolute coordinates. `x = ax * screenW + offsetX - ax * width`, where `ax`
+is 0, 0.5 or 1. That one formula gives you, with no special-casing anywhere:
 
 | | |
 |---|---|
-| Resolution changes | a bottom-right element stays bottom-right |
+| Resolution changes | a bottom-right element stays bottom-right, at any size |
 | Growth direction | right-anchored grows left, bottom grows up, centre grows both ways |
 | Edge gaps | an offset means "distance from my anchor", which is what users mean |
 
-Bounds are clamped so at least 8px stays on screen — an element may bleed off an
-edge, but never so far it cannot be grabbed again. Clamping never writes back to
-the layout, so briefly shrinking the window does not permanently move a HUD.
+```java
+HudLayout layout = Core.hud().layoutOf("clock");
+layout.setAnchor(Anchor.BOTTOM_RIGHT);   // or Core.hud().setAnchor(id, anchor)
+layout.setOffsetX(-4f);                  // 4px in from the right edge
+layout.setScale(1.5f);
+```
+
+`Core.hud().setAnchor(id, anchor)` re-anchors **without moving the element** — it
+recomputes the offset, so only the resize behaviour changes.
+
+Bounds are clamped so at least 8px stays on screen; an element smaller than that
+stays fully visible. Clamping never writes back to the layout, so briefly
+shrinking the window does not permanently move someone's HUD.
 
 ### Three geometries, kept separate
 
@@ -312,32 +365,80 @@ default. Override it when they differ, and a circular element stops having a
 rectangular hitbox:
 
 ```java
+// A dial: its layout box is square, but only the disc is clickable.
 @Override public Shape getShape(float x, float y, float w, float h) {
     return Shape.circle(x + w / 2f, y + h / 2f, w / 2f);
 }
+
+// A radar cone: the empty space either side of the triangle is not clickable.
+@Override public Shape getShape(float x, float y, float w, float h) {
+    return Shape.polygon(Vec2.of(x + w / 2f, y),
+                         Vec2.of(x, y + h),
+                         Vec2.of(x + w, y + h));
+}
 ```
 
-`Shape` also strokes itself, so the editor's selection outline traces circles and
-polygons correctly without ever switching on shape type. `Shape.rect`,
-`roundRect`, `circle` and `polygon` are built in; a new one works in the editor
-the day it is written.
+`Shape.rect`, `roundRect`, `circle` and `polygon` are built in; polygons may be
+concave, since containment is a ray cast rather than a convex test.
 
-Everything above is in **natural, unscaled** coordinates. An element's scale
-factor is applied as a transform around it, so an element that never mentions
-scale is automatically scalable.
+**A `Shape` strokes itself.** That is what lets the editor outline a circle or a
+polygon correctly without ever switching on shape type — so a new shape works in
+the editor the day it is written.
+
+Everything above is in **natural, unscaled** coordinates. An element's scale is
+applied as a transform around it, so an element that never mentions scale is
+automatically scalable.
 
 ### Edit mode
 
 `HudEditor` subscribes to Core's `MouseEvent` / `KeyEvent` / `ScrollEvent` at
-`Priority.HIGHEST` and cancels every one while open — that cancellation *is* how
-input is swallowed, so nothing behind the editor can fire. The adapter just posts
-the events its screen already receives.
+`Priority.HIGHEST` and cancels every one while open. That cancellation **is** how
+input is swallowed: with the events consumed first, nothing behind the editor can
+fire. Your adapter only has to post the events its screen already receives.
 
-Select and drag to move; scroll or drag a corner handle to scale; snapping to
-screen edges and centre with guides, suspended while `ALT` is held. Per element:
-lock, hide, z-order, reset — all reversible, all available as methods
-(`editor.toggleLockSelected()`, `bringSelectedToFront()`, `resetSelected()`) as
-well as keys.
+```java
+// In the adapter's editor screen
+public final class HudEditorScreen extends GuiScreen {
+
+    @Override protected void mouseClicked(int x, int y, int button) {
+        Core.bus().post(new MouseEvent(MouseButton.byIndex(button), mods(), true, x, y));
+    }
+
+    @Override protected void mouseReleased(int x, int y, int button) {
+        Core.bus().post(new MouseEvent(MouseButton.byIndex(button), mods(), false, x, y));
+    }
+
+    @Override protected void keyTyped(char typed, int code) {
+        Core.bus().post(new KeyEvent(Keys.fromLwjgl(code), mods(), true));
+    }
+
+    @Override public void onGuiClosed() { Core.hud().closeEditor(); }
+}
+```
+
+Dragging follows `Platform.getMouseX()` each frame rather than a move event, so
+there is no mouse-move event to bridge.
+
+| Action | Mouse / key | Method |
+|---|---|---|
+| Select | click | `editor.select(id)` |
+| Move | drag | `editor.nudgeSelected(dx, dy)` |
+| Scale | scroll, or drag a corner handle | `editor.scaleSelected(delta)` |
+| Lock | `L` | `editor.toggleLockSelected()` |
+| Hide | `H`, or right-click | `editor.toggleHiddenSelected()` |
+| Z-order | `PageUp` / `PageDown` | `editor.bringSelectedToFront()` |
+| Reset | `R` | `editor.resetSelected()` / `Core.hud().resetAll()` |
+| Deselect, then close | `Escape` | `Core.hud().closeEditor()` |
+
+Snapping to screen edges and centre draws alignment guides and is suspended while
+`ALT` is held. A locked element is still selectable, so it can be unlocked; a
+hidden one still shows faintly in the editor, so it can be brought back. Corner
+handles sit outside the element, and flip inside when an element is anchored into
+a screen corner and there would be no room.
+
+> The editor cancels **every** key, including whatever bind opened it. `Escape`
+> is therefore the way out: it clears the selection if there is one, and closes
+> the editor otherwise.
 
 ---
 
@@ -370,13 +471,21 @@ well as keys.
 
 ## 8. What your adapter must supply
 
-1. **`Platform`** — data dir, screen metrics, chat, username, in-game flag
+1. **`Platform`** — data dir, screen metrics, cursor, chat, username, in-game flag
 2. **`Render2D`** — your 2D library
 3. **`Render3D`** — world drawing and projection
 4. **`FontProvider`** — font loading for that backend
-5. **Event bridging** — post Core's events from your mixins
+5. **Event bridging** — post Core's events from your mixins. For the HUD editor
+   that means `MouseEvent`, `KeyEvent` and `ScrollEvent` from your editor screen;
+   `Platform.getMouseX()` covers dragging, so there is no move event to bridge.
+6. **A screen for the editor** — a bare `GuiScreen` that posts input and calls
+   `Core.hud().closeEditor()` when dismissed. Core draws the HUD and the editor
+   overlay itself from `Render2DEvent`.
 
 Optional: `AuthProvider` (alt manager), `PresenceProvider` / `MediaProvider`.
+
+Core runs headless without any of these. The test suite boots it with none
+installed, which is how the seam stays honest.
 
 ---
 
