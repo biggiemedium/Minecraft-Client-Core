@@ -8,7 +8,10 @@ import dev.px.core.config.SettingsSection;
 import dev.px.core.config.ToggleableSection;
 import dev.px.core.event.EventBus;
 import dev.px.core.event.bus.CoreEventBus;
+import dev.px.core.event.Priority;
+import dev.px.core.event.Stage;
 import dev.px.core.event.impl.ClientLifecycleEvent;
+import dev.px.core.event.impl.TickEvent;
 import dev.px.core.gui.GuiService;
 import dev.px.core.hud.HudService;
 import dev.px.core.input.InputService;
@@ -104,7 +107,7 @@ public final class Core {
         SettingChangeEvent.bindBus(bus);
         Module.bindBus(bus);
 
-        this.threadService = services.register(new ThreadService(logger));
+        this.threadService = services.register(new ThreadService(logger, builder.threadPoolSize));
         this.configService = services.register(new ConfigService(logger, bus, platform));
         this.fontService = services.register(new FontService(logger));
         this.themeService = services.register(new ThemeService());
@@ -137,7 +140,22 @@ public final class Core {
         if (started) {
             throw new IllegalStateException(clientName + " is already started");
         }
+        // Called by the adapter from the game thread, so this is where that thread
+        // can be identified -- which is what lets ThreadService.sync() be checked
+        // rather than merely documented.
+        threadService.markGameThread();
+
         services.startAll();
+
+        // Background work parks game-state changes on ThreadService; they are run
+        // here, on whichever thread posts the tick. An adapter that posts TickEvent
+        // needs nothing else. One that does not must call runPendingSync() itself
+        // from its game loop, and ThreadService warns if nobody does either.
+        bus.on(TickEvent.class, Priority.HIGHEST, tick -> {
+            if (tick.getStage() == Stage.PRE) {
+                threadService.runPendingSync();
+            }
+        });
 
         registerConfigSections();
 
@@ -212,6 +230,12 @@ public final class Core {
         return get().configService;
     }
 
+    /**
+     * The background threading and the game-thread queue.
+     *
+     * <p>Never null, and safe to call before startup or after shutdown: work
+     * requested while it is down is dropped with a warning rather than throwing.
+     */
     public static ThreadService threads() {
         return get().threadService;
     }

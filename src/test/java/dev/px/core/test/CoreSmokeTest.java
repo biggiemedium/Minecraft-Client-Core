@@ -3,6 +3,7 @@ package dev.px.core.test;
 import dev.px.core.test.harness.Checks;
 import dev.px.core.test.harness.TestClient;
 import dev.px.core.test.suite.CommandTests;
+import dev.px.core.test.suite.ConcurrentTests;
 import dev.px.core.test.suite.ConfigTests;
 import dev.px.core.test.suite.EventTests;
 import dev.px.core.test.suite.GuiTests;
@@ -52,6 +53,7 @@ public final class CoreSmokeTest {
         TestClient client = TestClient.boot();
 
         ServiceTests.run(client);
+        ConcurrentTests.run(client);
         EventTests.run(client);
         SettingTests.run(client);
         ModuleTests.run(client);

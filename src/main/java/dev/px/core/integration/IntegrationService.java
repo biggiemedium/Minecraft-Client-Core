@@ -9,6 +9,7 @@ import dev.px.core.util.CoreLogger;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -50,6 +51,9 @@ public final class IntegrationService extends SettingHolder implements Service {
     private RichPresence lastPublished;
     private long lastMediaPoll;
 
+    private ScheduledFuture<?> presenceTask;
+    private ScheduledFuture<?> mediaTask;
+
     public IntegrationService(CoreLogger logger, ThreadService threads) {
         this.logger = logger;
         this.threads = threads;
@@ -69,15 +73,28 @@ public final class IntegrationService extends SettingHolder implements Service {
     @Override
     public void start() {
         // One repeating task each, rather than a thread per integration.
-        threads.repeat(this::tickPresence, 2, 2, TimeUnit.SECONDS);
-        threads.repeat(this::tickMedia, 1, 1, TimeUnit.SECONDS);
+        presenceTask = threads.repeat(this::tickPresence, 2, 2, TimeUnit.SECONDS);
+        mediaTask = threads.repeat(this::tickMedia, 1, 1, TimeUnit.SECONDS);
     }
 
     @Override
     public void stop() {
+        // Cancelled explicitly rather than left for the pool to die under. Core
+        // owns the pool today, but a client that hands Core an executor of its own
+        // would otherwise keep polling a disconnected provider for the rest of the
+        // process lifetime.
+        presenceTask = cancel(presenceTask);
+        mediaTask = cancel(mediaTask);
         if (presenceProvider != null && presenceProvider.isConnected()) {
             presenceProvider.disconnect();
         }
+    }
+
+    private static ScheduledFuture<?> cancel(ScheduledFuture<?> task) {
+        if (task != null) {
+            task.cancel(true);
+        }
+        return null;
     }
 
     /** @return the last polled track, or null. Safe to read from the render thread. */

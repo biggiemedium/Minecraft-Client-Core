@@ -118,7 +118,7 @@ public final class KillAura extends Module {
 
 Everything above compiles against Core except the two lines marked `// yours`:
 finding a target and swinging at one need the game, and Core has no entity type
-— see §9. Everything else is real API: `Vec3.rotationTo` solves the rotation,
+— see §10. Everything else is real API: `Vec3.rotationTo` solves the rotation,
 `RotationMath.step` traces the turn out over several ticks instead of snapping,
 and `Box.around` builds the hitbox to outline. `ExampleKillAura` in the test
 suite is this module, running headless.
@@ -1090,7 +1090,101 @@ setting rows once at startup. Harmless, but it is not opt-out yet.
 
 ---
 
-## 8. Package map
+## 8. Threading
+
+Three tiers, because background work in a client comes in three shapes and one
+pool cannot serve all of them. A `while (true)` loop sharing a fixed pool with a
+one-second timer means the loop owns a thread forever and the timer quietly stops
+firing — nothing throws, nothing is logged.
+
+| Call | For | Runs on |
+|---|---|---|
+| `submit(Runnable)` / `submit(Callable<T>)` | work that finishes: a login, an update check, a file scan | a pool of `threadPoolSize()` workers that time out when idle |
+| `schedule` / `repeat` | timers | their own small pool, which the tier above cannot starve |
+| `loop(label, body)` | work that runs until switched off | a dedicated daemon thread per loop |
+
+```java
+Core.threads().submit(() -> {
+    String latest = Http.getOrNull(VERSION_URL);          // worker thread
+    Core.threads().sync(() -> {                           // game thread
+        Core.notifications().info("Update", latest + " is available");
+    });
+});
+```
+
+`repeat` is fixed-*delay*, not fixed-rate: if one run overruns the period,
+fixed-rate fires the backlog all at once, which is the wrong behaviour for
+polling an API. A run that throws is logged and the schedule **continues** — a
+raw `scheduleWithFixedDelay` cancels every remaining run the first time its body
+throws, so one network blip would stop the poll for the session. Everywhere else
+a failure is logged *and* rethrown, so a `Future` you check still reports it.
+
+### Getting back to the game thread
+
+Background work must not touch game state. `sync(Runnable)` queues a task and
+`runPendingSync()` runs the queue, and Core wires that drain to `TickEvent` — so
+**if your adapter posts ticks, this already works.** If it does not, call
+`Core.threads().runPendingSync()` from your game loop yourself; `ThreadService`
+warns if a backlog builds up and nobody is draining it.
+
+Tasks run in queue order on the next drain, even when `sync` is called from the
+game thread already: running inline would let a task execute in the middle of
+another one's drain. A drain is bounded to the backlog present on entry, so a
+task that queues another cannot spin a frame. `runPendingSync(limit)` spreads a
+large backlog over several ticks, and `isGameThread()` answers whether you are
+somewhere it is safe to touch the world — `false` when no thread has been
+marked, since the safe answer to that question when unknown is no.
+
+### Modules
+
+`ThreadedModule` is the shape for a module whose work is a loop. It gets its own
+thread through `loop`, so any number can be enabled at once:
+
+```java
+@ModuleInfo(name = "Scanner", description = "Scans in the background", category = "Render")
+public final class Scanner extends ThreadedModule {
+
+    private volatile List<String> found = Collections.emptyList();
+
+    @Override
+    protected void runInBackground() {
+        while (!Thread.currentThread().isInterrupted()) {
+            List<String> scanned = scan();
+            Core.threads().sync(() -> found = scanned);
+            try {
+                Thread.sleep(500L);
+            } catch (InterruptedException e) {
+                return;                      // disabled; stop
+            }
+        }
+    }
+}
+```
+
+Honour interruption — return from an `InterruptedException` rather than
+continuing. Cancellation is not treated as a failure, so switching a module off
+logs nothing even though the body unwinds with an exception.
+
+### Lifecycle
+
+Work requested before `start()` or after `stop()` is dropped with one warning and
+an already-finished handle, never a `NullPointerException`. Shutdown is two-phase:
+work already running gets 1.5s to finish on its own — a config half-written to
+disk is worth waiting for — and only then are the stragglers interrupted.
+
+Pool size comes from the builder:
+
+```java
+Core.builder("LeapFrog", "2.0").platform(...).threadPoolSize(4).build();
+```
+
+That sizes only the `submit` tier; timers have their own pool and each `loop` has
+its own thread, so it is worth raising only for a client firing many concurrent
+requests.
+
+---
+
+## 9. Package map
 
 | Package | What it is |
 |---|---|
@@ -1119,7 +1213,7 @@ setting rows once at startup. Harmless, but it is not opt-out yet.
 | `util.text` | `TextUtil` (labels, durations, byte counts, roman numerals, "did you mean"), `ChatColor` (the section-sign codes) |
 | `util.net` | `Http` — blocking one-shot GET/POST for update checks and small APIs. Run it on `ThreadService` |
 | `notification` | On-screen toast queue. Core owns the lifecycle; you draw them |
-| `concurrent` | `ThreadService` — named daemon pool; task exceptions are logged, not swallowed |
+| `concurrent` | `ThreadService` — three tiers (one-shot workers, timers, dedicated loop threads) plus the game-thread queue; `TaskHandle` for cancelling a loop. Task exceptions are logged, not swallowed. See §8 |
 | `social` | Friends list, consulted by targeting / nametags / chat |
 | `account` | Alt manager. `AuthProvider` is the SPI you implement for Microsoft login |
 | `integration` | Optional external hooks: **Discord Rich Presence** (`PresenceProvider`) and **now-playing / Spotify** (`MediaProvider`). Both polled off-thread; absent providers are simply inert |
@@ -1138,7 +1232,7 @@ here, and the whole package is tested against mazes written as string literals.
 
 ---
 
-## 9. What your adapter must supply
+## 10. What your adapter must supply
 
 1. **`Platform`** — data dir, screen metrics, cursor, chat, username, in-game flag
 2. **`Render2D`** — your 2D library
@@ -1157,6 +1251,10 @@ here, and the whole package is tested against mazes written as string literals.
    when dismissed. Core neither draws it nor listens for it. Skip this entirely if
    you are writing your own interface; see *Not using any of this* in §7.
 
+Nothing extra is needed for threading: Core drains the game-thread queue from
+`TickEvent`, so posting ticks (step 5) covers it. An adapter that does not post
+them calls `Core.threads().runPendingSync()` from its game loop instead; see §8.
+
 Optional: `AuthProvider` (alt manager), `PresenceProvider` / `MediaProvider`, and
 `PathSpace` if you use `util.spatial` — one lambda saying which cells your agent
 can occupy is enough to run `AStar` against your world.
@@ -1166,9 +1264,9 @@ installed, which is how the seam stays honest.
 
 ---
 
-## 10. Verifying
+## 11. Verifying
 
-`dev.px.core.test.CoreSmokeTest` runs **835 checks** in a plain JVM — no
+`dev.px.core.test.CoreSmokeTest` runs **893 checks** in a plain JVM — no
 Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
