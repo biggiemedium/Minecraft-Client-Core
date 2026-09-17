@@ -8,6 +8,9 @@ import dev.px.core.event.impl.KeyEvent;
 import dev.px.core.event.impl.MouseEvent;
 import dev.px.core.gui.Component;
 import dev.px.core.gui.GuiService;
+import dev.px.core.render.Color;
+import dev.px.core.layout.Bounds;
+import dev.px.core.layout.Align;
 import dev.px.core.layout.Content;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.Screen;
@@ -63,6 +66,7 @@ public final class GuiTests {
         routing(client, gui, aura);
         settingRows(client, gui, aura);
         inputGate(client, gui, aura);
+        documentedIdioms();
         persistence(gui);
 
         // Leave nothing swallowing input: the suites after this one post their own
@@ -452,6 +456,62 @@ public final class GuiTests {
                 !gui.mousePressed(1f, 1f, MouseButton.LEFT)
                         && !gui.charTyped('x')
                         && !gui.keyPressed(Key.Y, EnumSet.noneOf(Modifier.class)));
+    }
+
+    // ------------------------------------------------------ documented idioms
+
+    /**
+     * The two component idioms the README teaches, checked so the documentation
+     * cannot quietly stop being true.
+     *
+     * <p>Both were wrong the first time they were written, in ways that compile
+     * perfectly: a part with no width measures zero rather than spanning its box,
+     * and {@code align(CENTER)} on a column centres a label horizontally when what
+     * was wanted was left, centred vertically in the row. Neither is visible
+     * without either laying the thing out or looking at it.
+     */
+    private static void documentedIdioms() {
+        Checks.section("GUI: documented idioms");
+
+        // A divider: a rect with no width of its own, stretched to fill the box.
+        Component divider = new Component() {
+            @Override
+            protected void content(Content c) {
+                c.align(Align.STRETCH);
+                c.rect(0f, 1f, Color.WHITE);
+            }
+        };
+        divider.layout(0f, 0f, 120f);
+        Checks.checkEquals("a stretched rect spans the width it was given",
+                120f, divider.getBounds().getWidth());
+        Checks.checkEquals("and is as tall as it asked to be",
+                1f, divider.getBounds().getHeight());
+
+        // A labelled row: the button idiom, left-aligned and vertically centred.
+        Component button = new Component() {
+            @Override
+            protected void content(Content c) {
+                c.height(GuiStyle.rowHeight()).align(Align.STRETCH);
+                c.row(r -> {
+                    r.grow().padding(GuiStyle.padding(), 0f).align(Align.CENTER);
+                    r.text("Label", Color.WHITE);
+                    r.fill();
+                    r.custom("mark", 4f, 4f, (x, y, w, h) -> { });
+                });
+            }
+        };
+        button.layout(0f, 0f, 120f);
+        Checks.checkEquals("a fixed-height row is exactly that tall",
+                GuiStyle.rowHeight(), button.getBounds().getHeight());
+
+        Bounds mark = button.part("mark");
+        Checks.check("fill pushes the trailing part to the right edge, inside the padding",
+                mark != null && Checks.eq(mark.getRight(), 120f - GuiStyle.padding()));
+        Checks.check("and align(CENTER) centres it in the row rather than parking it at the top",
+                mark != null
+                        && Checks.eq(mark.getCenterY(), GuiStyle.rowHeight() / 2f));
+
+        Checks.check("a part nobody named cannot be found", button.part("absent") == null);
     }
 
     // ----------------------------------------------------------- persistence

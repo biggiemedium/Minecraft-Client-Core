@@ -745,21 +745,36 @@ GUI adapts to your look without any component being replaced — and a
 
 ### A component
 
-Two methods: how tall you are at a given width, and how to draw yourself.
-Stacking, hit routing, drag tracking and focus are handled above you, so writing
-a component never means reading the layout or input code. (A `HudElement` makes a
-narrower promise still — it only measures, and a `HudRenderer` draws it.)
+One method, and it is the same one a `HudElement` writes: **describe what you are
+made of.** Your height is what that measures and your appearance is that same
+description drawn, so the two cannot drift apart. Stacking, hit routing, drag
+tracking and focus are handled above you, so writing a component never means
+reading the layout or input code.
 
 ```java
 public final class Divider extends Component {
 
-    @Override public float getPreferredHeight(float width) { return 1f; }
-
-    @Override public void render(float x, float y, float w, float h) {
-        Render.rect(x, y, w, h, GuiStyle.outline());
+    @Override protected void content(Content c) {
+        c.align(Align.STRETCH);                 // else the rect is zero wide
+        c.rect(0f, 1f, GuiStyle.outline());
     }
 }
 ```
+
+A component is *handed* a width, where a HUD element sizes to its content, so
+three primitives matter here that do not in §6:
+
+| | |
+|---|---|
+| `fill()` | absorbs the slack — label left, value right |
+| `grow()` | a whole box takes the slack, not just a gap |
+| `align(Align.STRETCH)` | children get the box's full cross-axis size |
+
+Two more cover what a flow layout cannot express: **`backdrop(draw)`** puts
+arbitrary drawing *behind* a box's parts (`background()` only takes a flat
+colour, and parts stack rather than overlap), and **`clip()`** cuts parts off at
+the box's edge so a long value is truncated instead of spilling out of the window
+it sits in.
 
 Anything interactive adds one more method. `onClick` returns whether it consumed
 the press; returning false offers it to the parent, which is how a setting row
@@ -777,16 +792,21 @@ public final class Button extends Component {
         this.action = action;
     }
 
-    @Override public float getPreferredHeight(float width) { return GuiStyle.ROW_HEIGHT; }
-
-    @Override public void render(float x, float y, float w, float h) {
+    @Override protected void content(Content c) {
         hover.target(getBounds().contains(Core.platform().getMouseX(),
                                           Core.platform().getMouseY()));
 
-        Render.roundRect(x, y, w, h, GuiStyle.radius(w, h),
-                GuiStyle.surface().lerp(GuiStyle.accent(), hover.get()));
-        Render.text(label, x + GuiStyle.PADDING,
-                y + (h - Render.textHeight()) / 2f, GuiStyle.text());
+        float height = GuiStyle.rowHeight();
+        c.height(height).align(Align.STRETCH)
+         .background(GuiStyle.surface().lerp(GuiStyle.accent(), hover.get()),
+                     Math.min(GuiStyle.radius(), height / 2f));
+
+        // A row, not a bare text part: align(CENTER) on a column would centre the
+        // label horizontally, and what you want is left, centred in the row.
+        c.row(r -> {
+            r.grow().padding(GuiStyle.padding(), 0f).align(Align.CENTER);
+            r.text(label, GuiStyle.text());
+        });
     }
 
     @Override protected boolean onClick(float x, float y, MouseButton button) {
@@ -801,9 +821,10 @@ public final class Button extends Component {
 }
 ```
 
-Children are drawn by the engine, not by you — `render()` draws the component
-itself and the visible children follow, which is what makes a panel background
-work. Everything else is opt-in:
+Children are drawn by the engine, not by you — your content draws first and the
+visible children follow. A fill that must span the children too, such as a window
+background, goes in `renderBackdrop()` instead, because it needs a height that is
+only known once they are placed. Everything else is opt-in:
 
 | Override | For |
 |---|---|
@@ -811,14 +832,23 @@ work. Everything else is opt-in:
 | `onDrag` / `onRelease` | after `getScreen().beginDrag(this)` |
 | `onKey` / `onChar` | delivered only while you hold focus; take it with `focus()` |
 | `onScroll(amount, x, y)` | the wheel, over you |
+| `part(name)` / `hitsPart` | the rectangle a named part of your content was drawn in |
+| `renderBackdrop(x, y, w, h)` | a fill spanning your whole subtree |
 | `shape(x, y, w, h)` | a non-rectangular clickable region |
 | `isVisible()` | whether you take part in layout, drawing and hit testing at all |
 | `showsChildren()` | whether your children do |
 | `getTooltip()` | text shown when the cursor rests on you |
 
-`Panel` is the stack, and the only layout there is: `headerHeight()` reserves room
-for your own drawing, `getPadding()` insets the children, `childIndent()` shifts
-them right. A panel whose visible children are all gone collapses to its header.
+`Panel` is the stack, and the only layout there is for *children*:
+`headerHeight(width)` is measured from your own content rather than declared —
+so a header can never be a different height from the thing drawn in it —
+`getPadding()` insets the children, and `childIndent()` shifts them right. A panel
+whose visible children are all gone collapses to its header.
+
+> **Children stack vertically and nothing else.** The box model above applies to a
+> component's own content, not to its child components: there is no horizontal or
+> grid container for children, and no scrolling. A list longer than the screen has
+> no answer yet.
 
 ### Three things share one answer
 
@@ -859,13 +889,14 @@ public final class ProfileScreen extends Screen {
 
     /** Centred, a third of the way down. The panel measures its own height. */
     @Override protected void layoutChildren() {
-        float width = GuiStyle.WINDOW_WIDTH * 1.5f;
+        float width = GuiStyle.windowWidth() * 1.5f;
         body.layout((getScreenWidth() - width) / 2f, getScreenHeight() / 3f, width);
     }
 
     /** Dim the game behind it. Skip this and the screen draws over a live world. */
-    @Override public void render(float x, float y, float w, float h) {
-        Render.rect(0f, 0f, getScreenWidth(), getScreenHeight(), GuiStyle.backdrop());
+    @Override protected void content(Content c) {
+        c.custom(getScreenWidth(), getScreenHeight(),
+                (x, y, w, h) -> Render.rect(x, y, w, h, GuiStyle.backdrop()));
     }
 }
 ```
@@ -889,7 +920,7 @@ A row extends `SettingComponent<S>`, which handles the three things every row
 does identically: visibility follows `visibleWhen`, the tooltip is the setting's
 `describe` text, and the header is one row high so it lines up with its
 neighbours. It also measures itself, so the only method a row must write is
-`render`. Replacing one of Core's is the same call with the built-in type:
+`content`. Replacing one of Core's is the same call with the built-in type:
 
 ```java
 /** A stepper instead of a slider: click the left half to go down, the right to go up. */
@@ -899,18 +930,19 @@ public final class StepperRow extends SettingComponent<NumberSetting<?>> {
         super(setting);
     }
 
-    @Override public void render(float x, float y, float w, float h) {
-        renderRow(x, y, w, false);                              // the row background
-        renderLabel(x, y);                                      // the setting's name
-        renderValue(getSetting().displayValue(), x, y, w);      // right-aligned value
+    @Override protected void content(Content c) {
+        // header() is the standard row: the setting's name, then whatever you add
+        // on the right. "steps" is named, so the click below measures against the
+        // very rectangle that was drawn.
+        header(c, false, row -> row.custom("steps", 40f, GuiStyle.rowHeight(),
+                (x, y, w, h) -> Render.text(getSetting().displayValue(), x, y, GuiStyle.text())));
     }
 
     @Override protected boolean onClick(float pointerX, float pointerY, MouseButton button) {
         if (button != MouseButton.LEFT) {
             return false;
         }
-        // progressAt turns a cursor position into a 0..1 fraction of this row.
-        boolean left = progressAt(pointerX, getBounds().getX(), getBounds().getWidth()) < 0.5f;
+        boolean left = progressIn("steps", pointerX) < 0.5f;
         getSetting().setProgress(getSetting().progress() + (left ? -0.05f : 0.05f));
         return true;
     }
@@ -966,19 +998,18 @@ GuiStyle.text();         GuiStyle.textMuted();   GuiStyle.outline();
 GuiStyle.radius(w, h);   // theme rounding, capped so it cannot exceed the shape
 ```
 
-The metrics beside them — `ROW_HEIGHT`, `PADDING`, `SPACING`, `INDENT`,
-`WINDOW_WIDTH`, `TITLE_HEIGHT` — are the grid the whole GUI is laid out on. A
-component that invents its own row height stops lining up with every other
-component in the panel.
+The metrics beside them — `rowHeight()`, `padding()`, `spacing()`, `indent()`,
+`windowWidth()`, `titleHeight()` — are the grid the whole GUI is laid out on, and
+they are replaceable as a set: see *Restyling what Core ships* above. A component
+that invents its own row height stops lining up with every other component in the
+panel.
 
 ### How input reaches a component
 
-`MouseEvent`, `KeyEvent`, `ScrollEvent` and `CharTypedEvent` are ordinary Core
-events, subscribed at `Priority.HIGHEST` and **cancelled** while a screen is
-open. That cancellation *is* how input is swallowed: consumed first, nothing
-behind the screen can fire, so no module toggles and no keystroke reaches the
-game while a text field has focus. The HUD editor used to work the same way; it
-no longer takes input at all, and you route your own into it.
+**Core subscribes to nothing.** Input arrives because the game screen hosting the
+GUI calls `Core.gui().mousePressed(...)`, `keyPressed(...)` and the rest — and
+that screen already owns the mouse and keyboard while it is showing, so there is
+nothing to intercept and nothing to cancel. The HUD editor works the same way.
 
 From there a press goes to the deepest component under the cursor and walks back
 up until one consumes it. Keys and characters go only to the focused component,
@@ -990,6 +1021,72 @@ from a move event — there is no mouse-move event to bridge. The HUD editor doe
 the same thing, except you pass it the cursor rather than it reading one.
 A component starts one with `getScreen().beginDrag(this)` and then receives
 `onDrag(x, y)` every frame until the button comes up.
+
+### Not using any of this
+
+The GUI package is optional. **Nothing outside `gui` references `Component`,
+`Panel` or `Screen`**, so a client that wants its own look from the ground up can
+ignore the whole package and lose nothing else. Core stays useful because the
+parts a GUI actually needs live elsewhere:
+
+| You need | It is in | Already yours |
+|---|---|---|
+| Drawing | `Render` / `Render2D` | you installed the backend |
+| Screen size, cursor, clipboard | `Platform` | you wrote it |
+| What to show | `Core.modules()`, `Core.categories()` | §2 |
+| Editing a value | `Setting<?>`, `SettingHolder.getSettings()` | §2 |
+| Colours and rounding | `ThemeService` | §5 |
+| Measuring text | `FontService`, `Font.widthOf` | §5 |
+| Remembering your state | implement `ConfigSection`, register it | §1 |
+| A box model, if you want one | `dev.px.core.layout` | §6 |
+
+That last row is worth knowing about: `Content`, `Bounds`, `Shape` and `Align`
+live in `dev.px.core.layout`, which imports neither `hud` nor `gui`. You can use
+the box model on its own — measure, lay out, draw, name a part and hit test it —
+without a single `Component`, or skip it and issue `Render` calls directly.
+
+**The settings do the work, not the rows.** Core's `NumberRow` is about forty
+lines because `NumberSetting` already clamps, steps, and converts to and from a
+0..1 fraction; `BindSetting` already formats itself; `ColorSetting` already
+carries its rainbow and theme-sync modes. Whatever you draw a slider as, the
+value handling is done.
+
+```java
+// your own screen, with none of gui/ involved
+for (Module module : Core.modules().inCategory(Categories.COMBAT)) {
+    drawMyButton(module.getDisplayName(), module.isEnabled(), module::toggle);
+
+    for (Setting<?> setting : module.getSettings()) {
+        if (setting instanceof NumberSetting) {
+            NumberSetting<?> number = (NumberSetting<?>) setting;
+            drawMySlider(number.getName(), number.displayValue(),
+                    number.progress(), number::setProgress);
+        }
+    }
+}
+```
+
+### What you plug in either way
+
+The seam does not change when you drop the GUI — it gets smaller:
+
+| | Using Core's GUI | Your own |
+|---|---|---|
+| `Render2D` backend | required | required |
+| `Platform` | required | required |
+| A game screen to host it | calls `Core.gui().renderFrame()` and the input methods | calls your own code |
+| Input | `Core.gui().mousePressed / keyPressed / charTyped / scrolled` | yours |
+| Persistence | `GuiService` saves screens through `Screen.save()` | register your own `ConfigSection` |
+| Keybinds and commands | post `KeyEvent` / `MouseEvent` / `ChatSendEvent` | unchanged — these are not the GUI's |
+
+Keybinds and commands are the row that catches people out: `InputService` and
+`CommandRegistry` listen on the event bus whether or not you use the GUI, so a
+client with a hand-rolled interface still posts those three events or its binds
+and commands silently never fire.
+
+One rough edge to know about: `GuiService.start()` builds the click GUI
+unconditionally, so a client that never opens it still constructs it and nine
+setting rows once at startup. Harmless, but it is not opt-out yet.
 
 ---
 
@@ -1047,16 +1144,18 @@ here, and the whole package is tested against mazes written as string literals.
 2. **`Render2D`** — your 2D library
 3. **`Render3D`** — world drawing and projection
 4. **`FontProvider`** — font loading for that backend
-5. **Event bridging** — post Core's events from your mixins: `MouseEvent`,
-   `KeyEvent`, `ScrollEvent` and `CharTypedEvent` for the GUI's text fields;
-   `Platform.getMouseX()` covers dragging, so there is no move event to bridge.
-6. **A screen for the GUI** — a bare `GuiScreen` that posts input and calls
-   `Core.gui().close()` when dismissed. Core draws the GUI itself from
-   `Render2DEvent`.
-7. **A per-frame `Core.hud().drawAll(...)`** from your render hook, and, if you
+5. **Event bridging** — post Core's events from your mixins. Only two things in
+   Core still listen: `InputService` wants `KeyEvent` and `MouseEvent` for module
+   keybinds, and `CommandRegistry` wants `ChatSendEvent` to intercept commands.
+   Post the rest for your own modules to subscribe to.
+6. **A per-frame `Core.hud().drawAll(...)`** from your render hook, and, if you
    want edit mode, a screen that routes input into `HudEditor` and draws
    `HudEditorView`. Elements describe themselves, so there is nothing else to
    write per element; see §6.
+7. **A game screen, if you use the GUI** — one that calls `Core.gui().renderFrame()`
+   and hands it mouse, key, scroll and character input, then `Core.gui().close()`
+   when dismissed. Core neither draws it nor listens for it. Skip this entirely if
+   you are writing your own interface; see *Not using any of this* in §7.
 
 Optional: `AuthProvider` (alt manager), `PresenceProvider` / `MediaProvider`, and
 `PathSpace` if you use `util.spatial` — one lambda saying which cells your agent
@@ -1069,7 +1168,7 @@ installed, which is how the seam stays honest.
 
 ## 10. Verifying
 
-`dev.px.core.test.CoreSmokeTest` runs **767 checks** in a plain JVM — no
+`dev.px.core.test.CoreSmokeTest` runs **835 checks** in a plain JVM — no
 Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
