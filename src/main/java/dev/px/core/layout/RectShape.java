@@ -1,4 +1,4 @@
-package dev.px.core.hud;
+package dev.px.core.layout;
 
 import dev.px.core.render.Color;
 import dev.px.core.render.Render;

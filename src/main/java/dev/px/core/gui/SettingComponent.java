@@ -1,10 +1,17 @@
 package dev.px.core.gui;
 
+import dev.px.core.layout.Draw;
+
+import dev.px.core.layout.Align;
+import dev.px.core.layout.Bounds;
+import dev.px.core.layout.Content;
 import dev.px.core.render.Color;
 import dev.px.core.render.Render;
 import dev.px.core.setting.Setting;
 import dev.px.core.util.Validate;
 import lombok.Getter;
+
+import java.util.function.Consumer;
 
 /**
  * Base for the row that edits one setting.
@@ -18,7 +25,7 @@ import lombok.Getter;
  *       left behind.</li>
  *   <li><b>The tooltip</b> is the setting's {@code describe} text, with no row
  *       having to remember to forward it.</li>
- *   <li><b>The header</b> is one {@link GuiStyle#ROW_HEIGHT} row, so a row that
+ *   <li><b>The header</b> is one {@link GuiStyle#rowHeight()} row, so a row that
  *       opens into a picker or a list lines up with the plain ones above it.</li>
  * </ul>
  *
@@ -35,12 +42,7 @@ public abstract class SettingComponent<S extends Setting<?>> extends Panel {
 
     protected SettingComponent(S setting) {
         this.setting = Validate.notNull(setting, "setting");
-        setPadding(GuiStyle.SPACING);
-    }
-
-    @Override
-    protected float headerHeight() {
-        return GuiStyle.ROW_HEIGHT;
+        setPadding(GuiStyle.spacing());
     }
 
     @Override
@@ -53,91 +55,105 @@ public abstract class SettingComponent<S extends Setting<?>> extends Panel {
         return setting.getDescription();
     }
 
-    // -------------------------------------------------------- drawing helpers
+    // -------------------------------------------------------- content helpers
 
     /**
-     * Fills the header row.
+     * The standard header: the setting's name on the left, whatever you add on
+     * the right.
      *
-     * @param highlighted whether to tint it, for a row that is open, focused or
-     *                    under the cursor
-     */
-    protected void renderRow(float x, float y, float w, boolean highlighted) {
-        float height = GuiStyle.ROW_HEIGHT;
-        Color fill = highlighted
-                ? GuiStyle.accent().withAlpha(70)
-                : GuiStyle.surface();
-        Render.roundRect(x, y, w, height, GuiStyle.radius(w, height), fill);
-    }
-
-    /** Draws the setting's name at the left of the header. */
-    protected void renderLabel(float x, float y) {
-        Render.text(setting.getName(), x + GuiStyle.PADDING, baseline(y), GuiStyle.text());
-    }
-
-    /** Draws a value flush with the right of the header. */
-    protected void renderValue(String text, float x, float y, float w) {
-        renderValue(text, x, y, w, GuiStyle.textMuted());
-    }
-
-    /**
-     * Right-aligns by measuring rather than by handing {@link Render} a font and
-     * an {@link dev.px.core.render.Alignment}.
+     * <p>Every row in the GUI is this shape, so it is described once here rather
+     * than nine times with nine slightly different paddings. The header's height
+     * is also what {@link Panel} reserves above the children, so a row that opens
+     * into a picker lines up with the plain ones above it automatically.
      *
-     * <p>That overload takes the font as an argument and measures with it, so it
-     * needs a real one; the no-argument calls are the ones that go quiet when
-     * none is installed. Measuring here keeps every draw on this row inside the
-     * documented contract that drawing before a backend exists is harmless,
-     * which is what lets a row lay itself out during early startup.
+     * @param highlighted tints the row: open, focused, or capturing a key
+     * @param right called with the header row, to add trailing parts
      */
-    protected void renderValue(String text, float x, float y, float w, Color color) {
-        if (text == null || text.isEmpty()) {
-            return;
+    protected void header(Content content, boolean highlighted, Consumer<Content> right) {
+        float height = GuiStyle.rowHeight();
+        Color fill = highlighted ? GuiStyle.accent().withAlpha(70) : GuiStyle.surface();
+
+        content.height(height)
+                .align(Align.STRETCH)
+                .background(fill, Math.min(GuiStyle.radius(), height / 2f));
+
+        content.row(row -> {
+            // Clipped, so a long value is cut off at the row's edge rather than
+            // spilling out past the window it sits in.
+            row.grow().clip()
+                    .padding(GuiStyle.padding(), 0f).gap(GuiStyle.padding()).align(Align.CENTER);
+            row.text(setting.getName(), GuiStyle.text());
+            row.fill();
+            if (right != null) {
+                right.accept(row);
+            }
+        });
+    }
+
+    /** The header with nothing after the label. */
+    protected void header(Content content, boolean highlighted) {
+        header(content, highlighted, null);
+    }
+
+    /** Adds the setting's value, dimmed, at the right of a header row. */
+    protected void value(Content row, String text) {
+        value(row, text, GuiStyle.textMuted());
+    }
+
+    protected void value(Content row, String text, Color color) {
+        if (text != null && !text.isEmpty()) {
+            row.text(text, color);
         }
-        float right = x + w - GuiStyle.PADDING - Render.textWidth(text);
-        Render.text(text, right, baseline(y), color);
     }
 
     /**
-     * @return the y a single line of text sits at to look centred in a row
-     *
-     * <p>With no font installed {@link Render#textHeight()} is 0 and this
-     * degrades to the row's middle, which is harmless: nothing is drawn anyway.
-     */
-    protected static float baseline(float y) {
-        return y + (GuiStyle.ROW_HEIGHT - Render.textHeight()) / 2f;
-    }
-
-    /**
-     * Draws the caret that marks something expandable.
+     * Adds the caret that marks something expandable.
      *
      * <p>Pointing right when closed and down when open, which is the one
      * convention every user already knows.
      */
-    protected void renderCaret(float x, float y, boolean open) {
+    protected void caret(Content row, boolean open) {
         float size = 3f;
-        float centerY = y + GuiStyle.ROW_HEIGHT / 2f;
-        Color color = GuiStyle.textMuted();
-        if (open) {
-            Render.triangle(x - size, centerY - size / 2f, x + size, centerY - size / 2f,
-                    x, centerY + size, color);
-        } else {
-            Render.triangle(x - size / 2f, centerY - size, x - size / 2f, centerY + size,
-                    x + size, centerY, color);
-        }
+        row.space(GuiStyle.padding(), 0f);
+        row.custom("caret", size * 2f, size * 2f, (x, y, w, h) -> {
+            float centerX = x + w / 2f;
+            float centerY = y + h / 2f;
+            Color color = GuiStyle.textMuted();
+            if (open) {
+                Render.triangle(centerX - size, centerY - size / 2f,
+                        centerX + size, centerY - size / 2f, centerX, centerY + size, color);
+            } else {
+                Render.triangle(centerX - size / 2f, centerY - size,
+                        centerX - size / 2f, centerY + size, centerX + size, centerY, color);
+            }
+        });
     }
 
     /**
-     * @return how far along the row a horizontal position sits, 0..1
+     * Adds a full-width track along the bottom of the row, named so a click can
+     * be measured against it.
      *
-     * <p>What every slider and every colour strip needs, and the one place the
-     * padding on either side is accounted for.
+     * <p>Needs the row to be {@code align(Align.STRETCH)} with the label row
+     * marked {@code grow()}, which {@link #header} already does.
      */
-    protected static float progressAt(float pointerX, float x, float w) {
-        float usable = w - GuiStyle.PADDING * 2f;
-        if (usable <= 0f) {
+    protected void track(Content content, float height, dev.px.core.layout.Draw draw) {
+        content.custom("track", 0f, height, draw);
+        content.space(0f, 1f);
+    }
+
+    /**
+     * @return how far along a named part a horizontal position sits, 0..1
+     *
+     * <p>Measured against the rectangle the part was actually drawn in, so the
+     * region that responds and the region that was drawn cannot disagree. That
+     * was the whole reason for naming it.
+     */
+    protected float progressIn(String partName, float pointerX) {
+        Bounds at = part(partName);
+        if (at == null || at.getWidth() <= 0f) {
             return 0f;
         }
-        float progress = (pointerX - (x + GuiStyle.PADDING)) / usable;
+        float progress = (pointerX - at.getX()) / at.getWidth();
         return progress < 0f ? 0f : progress > 1f ? 1f : progress;
     }
 }

@@ -1,21 +1,21 @@
 package dev.px.core.test.example;
 
 import dev.px.core.hud.Anchor;
+import dev.px.core.layout.Content;
 import dev.px.core.hud.HudElement;
 import dev.px.core.hud.HudLayout;
-import dev.px.core.hud.Size;
 import dev.px.core.render.Color;
-import dev.px.core.render.Render;
 
 /**
- * The floor: a HUD element with no settings, implementing the bare interface.
+ * The floor: a whole HUD element in six lines.
  *
- * <p>Two mandatory methods and nothing else. Anchoring, scaling, clamping,
- * z-order, hit testing, dragging and persistence are all handled above it.
+ * <p>An id and a description of what it is made of. Its size comes from that
+ * description, so there is no second method to keep in step. Anchoring, scaling,
+ * clamping, z-order, hit testing, dragging and persistence are all above it.
  */
 public final class ExampleWatermark implements HudElement {
 
-    private static final String TEXT = "Core";
+    public static final String TEXT = "Core";
 
     @Override
     public String getId() {
@@ -28,16 +28,12 @@ public final class ExampleWatermark implements HudElement {
     }
 
     @Override
-    public Size getPreferredSize() {
-        // Recomputed every frame. Render.textWidth returns 0 with no font
-        // installed, so a fixed floor keeps the element grabbable headless.
-        return Size.of(Math.max(48f, Render.textWidth(TEXT) + 8f), Render.textHeight() + 6f);
-    }
-
-    @Override
-    public void render(float x, float y, float w, float h) {
-        Render.roundRect(x, y, w, h, 3f, Color.of(0, 0, 0, 120));
-        Render.text(TEXT, x + 4f, y + 3f, Color.WHITE);
+    public void content(Content c) {
+        c.background(Color.of(0, 0, 0, 120), 3f).padding(4f, 3f);
+        // A floor, so the element stays grabbable in the editor even with no font
+        // installed -- which is exactly the situation the suite runs in.
+        c.min(48f, 12f);
+        c.text(TEXT, Color.WHITE);
     }
 
     @Override

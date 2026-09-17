@@ -1,5 +1,9 @@
 package dev.px.core.gui.setting;
 
+import dev.px.core.layout.Align;
+
+import dev.px.core.layout.Content;
+
 import dev.px.core.gui.Component;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.Screen;
@@ -60,19 +64,16 @@ public final class ColorRow extends SettingComponent<ColorSetting> {
 
     @Override
     protected float childIndent() {
-        return GuiStyle.INDENT;
+        return GuiStyle.indent();
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
+    protected void content(Content c) {
         readBack();
-        renderRow(x, y, w, open);
-        renderLabel(x, y);
-
-        float swatchX = x + w - GuiStyle.PADDING - SWATCH;
-        float swatchY = y + (GuiStyle.ROW_HEIGHT - SWATCH) / 2f;
-        Render.roundRect(swatchX, swatchY, SWATCH, SWATCH, 2f, getSetting().resolve());
-        Render.roundRectOutline(swatchX, swatchY, SWATCH, SWATCH, 2f, 1f, GuiStyle.outline());
+        header(c, open, row -> row.custom("swatch", SWATCH, SWATCH, (x, y, w, h) -> {
+            Render.roundRect(x, y, w, h, 2f, getSetting().resolve());
+            Render.roundRectOutline(x, y, w, h, 2f, 1f, GuiStyle.outline());
+        }));
     }
 
     @Override
@@ -208,20 +209,18 @@ public final class ColorRow extends SettingComponent<ColorSetting> {
         }
 
         @Override
-        public float getPreferredHeight(float width) {
-            return SQUARE_HEIGHT;
-        }
+        protected void content(Content c) {
+            c.align(Align.STRETCH);
+            c.custom("area", 0f, SQUARE_HEIGHT, (x, y, w, h) -> {
+                // White to the hue across, then transparent to black down. Two
+                // gradients give the whole square without the backend needing a shader.
+                Render.gradientH(x, y, w, h, Color.WHITE, owner.atFullBrightness());
+                Render.gradientV(x, y, w, h, Color.of(0, 0, 0, 0), Color.BLACK);
 
-        @Override
-        public void render(float x, float y, float w, float h) {
-            // White to the hue across, then transparent to black down. Two gradients
-            // give the whole square without the backend needing a shader.
-            Render.gradientH(x, y, w, h, Color.WHITE, owner.atFullBrightness());
-            Render.gradientV(x, y, w, h, Color.of(0, 0, 0, 0), Color.BLACK);
-
-            float markerX = x + w * owner.getSaturation();
-            float markerY = y + h * (1f - owner.getBrightness());
-            Render.circleOutline(markerX, markerY, 2.5f, 1f, Color.WHITE);
+                float markerX = x + w * owner.getSaturation();
+                float markerY = y + h * (1f - owner.getBrightness());
+                Render.circleOutline(markerX, markerY, 2.5f, 1f, Color.WHITE);
+            });
         }
 
         @Override
@@ -240,20 +239,18 @@ public final class ColorRow extends SettingComponent<ColorSetting> {
         }
 
         @Override
-        public float getPreferredHeight(float width) {
-            return STRIP_HEIGHT;
-        }
-
-        @Override
-        public void render(float x, float y, float w, float h) {
-            float step = w / SEGMENTS;
-            for (int i = 0; i < SEGMENTS; i++) {
-                Render.gradientH(x + step * i, y, step, h,
-                        Color.hsb(i / (float) SEGMENTS, 1f, 1f),
-                        Color.hsb((i + 1) / (float) SEGMENTS, 1f, 1f));
-            }
-            float markerX = x + w * owner.getHue();
-            Render.rect(markerX - 1f, y, 2f, h, Color.WHITE);
+        protected void content(Content c) {
+            c.align(Align.STRETCH);
+            c.custom("area", 0f, STRIP_HEIGHT, (x, y, w, h) -> {
+                float step = w / SEGMENTS;
+                for (int i = 0; i < SEGMENTS; i++) {
+                    Render.gradientH(x + step * i, y, step, h,
+                            Color.hsb(i / (float) SEGMENTS, 1f, 1f),
+                            Color.hsb((i + 1) / (float) SEGMENTS, 1f, 1f));
+                }
+                float markerX = x + w * owner.getHue();
+                Render.rect(markerX - 1f, y, 2f, h, Color.WHITE);
+            });
         }
 
         @Override
@@ -275,16 +272,14 @@ public final class ColorRow extends SettingComponent<ColorSetting> {
         }
 
         @Override
-        public float getPreferredHeight(float width) {
-            return STRIP_HEIGHT;
-        }
-
-        @Override
-        public void render(float x, float y, float w, float h) {
-            Color solid = owner.getSetting().get().withAlpha(255);
-            Render.gradientH(x, y, w, h, solid.withAlpha(0), solid);
-            float markerX = x + w * owner.getSetting().get().alphaF();
-            Render.rect(markerX - 1f, y, 2f, h, Color.WHITE);
+        protected void content(Content c) {
+            c.align(Align.STRETCH);
+            c.custom("area", 0f, STRIP_HEIGHT, (x, y, w, h) -> {
+                Color solid = owner.getSetting().get().withAlpha(255);
+                Render.gradientH(x, y, w, h, solid.withAlpha(0), solid);
+                float markerX = x + w * owner.getSetting().get().alphaF();
+                Render.rect(markerX - 1f, y, 2f, h, Color.WHITE);
+            });
         }
 
         @Override
@@ -315,17 +310,14 @@ public final class ColorRow extends SettingComponent<ColorSetting> {
         }
 
         @Override
-        public float getPreferredHeight(float width) {
-            return GuiStyle.ROW_HEIGHT;
-        }
-
-        @Override
-        public void render(float x, float y, float w, float h) {
+        protected void content(Content c) {
             boolean on = state.getAsBoolean();
-            float boxY = y + (h - BOX) / 2f;
-            Render.roundRect(x, boxY, BOX, BOX, 1f, on ? GuiStyle.accent() : GuiStyle.outline());
-            Render.text(label, x + BOX + GuiStyle.PADDING, y + (h - Render.textHeight()) / 2f,
-                    on ? GuiStyle.text() : GuiStyle.textMuted());
+            c.height(GuiStyle.rowHeight()).align(Align.CENTER);
+            c.row(r -> {
+                r.gap(GuiStyle.padding()).align(Align.CENTER);
+                r.roundRect(BOX, BOX, 1f, on ? GuiStyle.accent() : GuiStyle.outline());
+                r.text(label, on ? GuiStyle.text() : GuiStyle.textMuted());
+            });
         }
 
         @Override

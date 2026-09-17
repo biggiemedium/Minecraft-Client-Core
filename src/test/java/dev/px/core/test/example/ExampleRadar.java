@@ -2,9 +2,9 @@ package dev.px.core.test.example;
 
 import dev.px.core.hud.AbstractHudElement;
 import dev.px.core.hud.Anchor;
+import dev.px.core.layout.Content;
 import dev.px.core.hud.HudLayout;
-import dev.px.core.hud.Shape;
-import dev.px.core.hud.Size;
+import dev.px.core.layout.Shape;
 import dev.px.core.math.Vec2;
 import dev.px.core.render.Color;
 import dev.px.core.render.Render;
@@ -12,9 +12,9 @@ import dev.px.core.render.Render;
 /**
  * A polygonal element: a forward-facing radar cone.
  *
- * <p>Proves the shape system is not limited to the three built-in rectangles and
- * circles. The cone is a triangle, so the empty space either side of it is not
- * clickable, and the selection outline traces the triangle.
+ * <p>Proves the shape system is not limited to rectangles and circles. The cone
+ * is a triangle, so the empty space either side of it is not clickable and a
+ * selection outline traces the triangle.
  */
 public final class ExampleRadar extends AbstractHudElement {
 
@@ -26,13 +26,9 @@ public final class ExampleRadar extends AbstractHudElement {
     }
 
     @Override
-    public Size getPreferredSize() {
-        return Size.of(WIDTH, HEIGHT);
-    }
-
-    @Override
-    public void render(float x, float y, float w, float h) {
-        Render.triangle(x + w / 2f, y, x, y + h, x + w, y + h, Color.of(80, 200, 255, 90));
+    public void content(Content c) {
+        c.custom(WIDTH, HEIGHT, (x, y, w, h) -> Render.triangle(
+                x + w / 2f, y, x, y + h, x + w, y + h, Color.of(80, 200, 255, 90)));
     }
 
     @Override

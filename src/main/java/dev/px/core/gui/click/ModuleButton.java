@@ -1,5 +1,8 @@
 package dev.px.core.gui.click;
 
+import dev.px.core.layout.Align;
+import dev.px.core.layout.Content;
+
 import dev.px.core.gui.Component;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.Panel;
@@ -34,7 +37,7 @@ public final class ModuleButton extends Panel {
 
     public ModuleButton(Module module, SettingRendererRegistry renderers) {
         this.module = module;
-        setPadding(GuiStyle.SPACING);
+        setPadding(GuiStyle.spacing());
         this.enabled.snapTo(module.isEnabled() ? 1f : 0f);
 
         for (Setting<?> setting : module.getSettings()) {
@@ -61,11 +64,6 @@ public final class ModuleButton extends Panel {
     }
 
     @Override
-    protected float headerHeight() {
-        return GuiStyle.ROW_HEIGHT;
-    }
-
-    @Override
     protected boolean showsChildren() {
         return expanded;
     }
@@ -76,33 +74,35 @@ public final class ModuleButton extends Panel {
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
+    protected void content(Content c) {
         enabled.target(module.isEnabled());
         float progress = enabled.get();
+        float height = GuiStyle.rowHeight();
+        float radius = Math.min(GuiStyle.radius(), height / 2f);
 
-        float rowHeight = GuiStyle.ROW_HEIGHT;
-        float radius = GuiStyle.radius(w, rowHeight);
+        c.height(height).align(Align.STRETCH).background(GuiStyle.surface(), radius);
 
-        Render.roundRect(x, y, w, rowHeight, radius, GuiStyle.surface());
         if (progress > 0f) {
             // The accent gradient spans the row, so a column of enabled modules
-            // reads as one ramp rather than a stack of identical bars.
-            Render.roundGradient(x, y, w, rowHeight, radius,
-                    GuiStyle.accent(0f).withAlpha((int) (progress * 255f)),
-                    GuiStyle.accent(1f).withAlpha((int) (progress * 255f)),
-                    GuiStyle.accent(1f).withAlpha((int) (progress * 255f)),
-                    GuiStyle.accent(0f).withAlpha((int) (progress * 255f)));
+            // reads as one ramp rather than a stack of identical bars. Behind the
+            // label, not above it, which is what a backdrop is for.
+            int alpha = (int) (progress * 255f);
+            c.backdrop((x, y, w, h) -> Render.roundGradient(x, y, w, h, radius,
+                    GuiStyle.accent(0f).withAlpha(alpha), GuiStyle.accent(1f).withAlpha(alpha),
+                    GuiStyle.accent(1f).withAlpha(alpha), GuiStyle.accent(0f).withAlpha(alpha)));
         }
 
-        Color label = GuiStyle.textMuted().lerp(GuiStyle.text(), progress);
-        Render.text(module.getDisplayName(), x + GuiStyle.PADDING,
-                y + (rowHeight - Render.textHeight()) / 2f, label);
-
-        if (hasSettings()) {
-            float dot = 2f;
-            Render.circle(x + w - GuiStyle.PADDING - dot, y + rowHeight / 2f, dot,
-                    expanded ? GuiStyle.accent() : GuiStyle.outline());
-        }
+        c.row(row -> {
+            row.grow().padding(GuiStyle.padding(), 0f).align(Align.CENTER);
+            row.text(module.getDisplayName(), GuiStyle.textMuted().lerp(GuiStyle.text(), progress));
+            row.fill();
+            if (hasSettings()) {
+                float dot = 2f;
+                row.custom("marker", dot * 2f, dot * 2f, (x, y, w, h) -> Render.circle(
+                        x + w / 2f, y + h / 2f, dot,
+                        expanded ? GuiStyle.accent() : GuiStyle.outline()));
+            }
+        });
     }
 
     @Override
@@ -111,7 +111,7 @@ public final class ModuleButton extends Panel {
         // offered to that row; it reaches here only if the row declined it, and
         // toggling the module because a slider ignored a right-click would be
         // the wrong answer.
-        if (y > getBounds().getY() + GuiStyle.ROW_HEIGHT) {
+        if (y > getBounds().getY() + headerHeight(getBounds().getWidth())) {
             return false;
         }
         if (button == MouseButton.LEFT) {

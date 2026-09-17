@@ -1,5 +1,9 @@
 package dev.px.core.gui.setting;
 
+import dev.px.core.layout.Align;
+
+import dev.px.core.layout.Content;
+
 import dev.px.core.gui.Component;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.SettingComponent;
@@ -35,15 +39,15 @@ public final class MultiEnumRow extends SettingComponent<MultiEnumSetting<?>> {
 
     @Override
     protected float childIndent() {
-        return GuiStyle.INDENT;
+        return GuiStyle.indent();
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
-        renderRow(x, y, w, open);
-        renderLabel(x, y);
-        renderValue(getSetting().displayValue(), x, y, w - 8f);
-        renderCaret(x + w - GuiStyle.PADDING - 3f, y, open);
+    protected void content(Content c) {
+        header(c, open, row -> {
+            value(row, getSetting().displayValue());
+            caret(row, open);
+        });
     }
 
     @Override
@@ -80,17 +84,14 @@ public final class MultiEnumRow extends SettingComponent<MultiEnumSetting<?>> {
         }
 
         @Override
-        public float getPreferredHeight(float width) {
-            return GuiStyle.ROW_HEIGHT;
-        }
-
-        @Override
-        public void render(float x, float y, float w, float h) {
+        protected void content(Content c) {
             boolean on = owner.has(option);
-            float boxY = y + (h - BOX) / 2f;
-            Render.roundRect(x, boxY, BOX, BOX, 1f, on ? GuiStyle.accent() : GuiStyle.outline());
-            Render.text(label, x + BOX + GuiStyle.PADDING, y + (h - Render.textHeight()) / 2f,
-                    on ? GuiStyle.text() : GuiStyle.textMuted());
+            c.height(GuiStyle.rowHeight()).align(Align.CENTER);
+            c.row(r -> {
+                r.gap(GuiStyle.padding()).align(Align.CENTER);
+                r.roundRect(BOX, BOX, 1f, on ? GuiStyle.accent() : GuiStyle.outline());
+                r.text(label, on ? GuiStyle.text() : GuiStyle.textMuted());
+            });
         }
 
         @Override

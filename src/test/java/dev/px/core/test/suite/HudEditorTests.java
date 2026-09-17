@@ -1,35 +1,26 @@
 package dev.px.core.test.suite;
 
-import dev.px.core.event.impl.KeyEvent;
-import dev.px.core.event.impl.MouseEvent;
-import dev.px.core.event.impl.ScrollEvent;
 import dev.px.core.hud.Anchor;
-import dev.px.core.hud.Bounds;
+import dev.px.core.layout.Bounds;
 import dev.px.core.hud.HudEditor;
+import dev.px.core.hud.HudEditorView;
 import dev.px.core.hud.HudLayout;
 import dev.px.core.hud.HudService;
-import dev.px.core.input.Key;
-import dev.px.core.input.Modifier;
-import dev.px.core.input.MouseButton;
+import dev.px.core.hud.Placement;
+import dev.px.core.hud.SnapGuide;
 import dev.px.core.test.harness.Checks;
 import dev.px.core.test.harness.TestClient;
 
-import java.util.EnumSet;
-import java.util.Set;
-
 /**
- * Edit mode: selection, dragging, snapping, locking and the input gate.
+ * Edit mode: selection, dragging, snapping, locking, and the view it hands back.
  *
- * <p>Dragging is driven by moving the fake cursor and rendering a frame, which
- * is exactly what happens in a real client. A drag that works here works there,
- * because nothing in between involves a window.
+ * <p>Driven entirely through the editor's own API. There is no event posting
+ * here and no frame being rendered, because the editor no longer listens to
+ * either &mdash; a drag is {@code press}, {@code update}, {@code release}, which
+ * is exactly what a client's screen calls. That this suite needs no window and
+ * no render backend is the point of the redesign.
  */
 public final class HudEditorTests {
-
-    private static final Set<Modifier> NONE = EnumSet.noneOf(Modifier.class);
-
-    /** ALT suspends snapping, so drag assertions test the drag and not the snap. */
-    private static final Set<Modifier> ALT = EnumSet.of(Modifier.ALT);
 
     private HudEditorTests() {
     }
@@ -53,106 +44,112 @@ public final class HudEditorTests {
         hud.openEditor();
         Checks.check("opening sets the editing flag", hud.isEditing());
 
-        hud.renderFrame();
+        hud.resolve(true);
         Checks.check("elements see the editing flag and can freeze their values",
                 client.getClock().isSawEditing());
 
-        // ---- input is swallowed ---------------------------------------------------
-        // Aimed at empty space and released, so the swallow check does not leave a
-        // drag in flight for the assertions below.
-        MouseEvent stray = post(client, new MouseEvent(MouseButton.LEFT, NONE, true, 700f, 150f));
-        Checks.check("mouse input is swallowed while editing", stray.isCancelled());
-        post(client, new MouseEvent(MouseButton.LEFT, NONE, false, 700f, 150f));
-
-        KeyEvent key = post(client, new KeyEvent(Key.Q, NONE, true));
-        Checks.check("key input is swallowed too", key.isCancelled());
-
-        ScrollEvent scroll = post(client, new ScrollEvent(1f, 5f, 5f));
-        Checks.check("and scrolling", scroll.isCancelled());
+        // ---- the editor draws nothing -------------------------------------------
+        // The whole point of the redesign: everything below is geometry, and the
+        // view is the only thing an editor UI needs in order to draw itself.
+        HudEditorView opened = editor.view();
+        Checks.check("an open editor yields a live view", opened.isActive());
+        Checks.check("the view carries every element, hidden ones included",
+                opened.getPlacements().size() >= 5);
+        Checks.check("with nothing selected there are no handles",
+                opened.getHandles().isEmpty());
 
         // ---- selection is shape-aware ------------------------------------------------
         place(watermark, Anchor.TOP_LEFT, 300f, 200f);
         place(dial, Anchor.TOP_LEFT, 500f, 300f);
-        hud.renderFrame();
+        editor.update(0f, 0f);
 
         Bounds mark = HudLayoutTests.boundsOf(hud, "watermark");
-        post(client, press(mark.getCenterX(), mark.getCenterY()));
+        editor.press(mark.getCenterX(), mark.getCenterY());
         Checks.checkEquals("clicking an element selects it", "watermark", editor.getSelectedId());
+        editor.release();
 
         // The dial is a circle at (500,300)-(540,340): its box corner is empty space.
-        post(client, press(501f, 301f));
+        editor.press(501f, 301f);
         Checks.check("clicking the empty corner of a circular element misses it",
                 !"dial".equals(editor.getSelectedId()));
-        post(client, release(501f, 301f));
+        editor.release();
 
-        post(client, press(520f, 320f));
+        editor.press(520f, 320f);
         Checks.checkEquals("clicking inside the circle selects it", "dial", editor.getSelectedId());
-        post(client, release(520f, 320f));
+        editor.release();
 
-        post(client, press(830f, 60f));
+        editor.press(830f, 60f);
         Checks.check("clicking empty space clears the selection", editor.getSelectedId() == null);
+        editor.release();
+
+        // ---- the view reports selection and hover ---------------------------------
+        editor.update(mark.getCenterX(), mark.getCenterY());
+        editor.press(mark.getCenterX(), mark.getCenterY());
+        HudEditorView selectedView = editor.view();
+        Checks.checkEquals("the view names the selection",
+                "watermark", selectedView.getSelected().getId());
+        Checks.checkEquals("and what the cursor is over",
+                "watermark", selectedView.getHovered().getId());
+        Checks.checkEquals("an unlocked selection offers four resize handles",
+                4, selectedView.getHandles().size());
+        Checks.check("and it reports the drag in progress", selectedView.isDragging());
 
         // ---- dragging ---------------------------------------------------------------------
-        hud.renderFrame();
-        post(client, press(mark.getCenterX(), mark.getCenterY()));
-        Checks.checkEquals("the drag begins on the element clicked", "watermark", editor.getSelectedId());
-        Checks.check("and it is dragging", editor.isDragging());
-
-        client.getPlatform().setMouse(mark.getCenterX() + 50f, mark.getCenterY() + 30f);
-        hud.renderFrame();
+        // No frame is rendered: update() is the whole mechanism.
+        editor.setSnappingSuspended(true);
+        editor.update(mark.getCenterX() + 50f, mark.getCenterY() + 30f);
         Checks.check("dragging moves the element by the cursor delta",
                 Checks.eq(HudLayoutTests.boundsOf(hud, "watermark").getX(), 350f)
                         && Checks.eq(HudLayoutTests.boundsOf(hud, "watermark").getY(), 230f));
 
-        post(client, release(0f, 0f));
+        editor.release();
         Checks.check("releasing ends the drag", !editor.isDragging());
-        client.getPlatform().setMouse(700f, 400f);
-        hud.renderFrame();
+        editor.update(700f, 400f);
         Checks.checkEquals("and the element stops following the cursor",
                 350f, HudLayoutTests.boundsOf(hud, "watermark").getX());
 
         // ---- snapping ----------------------------------------------------------------------
-        // Drag without ALT, near the left edge: it should snap flush to zero.
+        editor.setSnappingSuspended(false);
         place(watermark, Anchor.TOP_LEFT, 100f, 100f);
-        hud.renderFrame();
+        editor.update(0f, 0f);
         Bounds atHundred = HudLayoutTests.boundsOf(hud, "watermark");
-        post(client, new MouseEvent(MouseButton.LEFT, NONE, true,
-                atHundred.getCenterX(), atHundred.getCenterY()));
+        editor.press(atHundred.getCenterX(), atHundred.getCenterY());
         // Aim for x = 3, close enough to the screen edge for the snap to take it.
-        client.getPlatform().setMouse(3f + atHundred.getWidth() / 2f, atHundred.getCenterY());
-        hud.renderFrame();
+        editor.update(3f + atHundred.getWidth() / 2f, atHundred.getCenterY());
         Checks.checkEquals("dragging near an edge snaps flush to it",
                 0f, HudLayoutTests.boundsOf(hud, "watermark").getX());
         Checks.check("and an alignment guide is recorded", editor.isSnapped());
-        post(client, release(0f, 0f));
 
-        // Same drag with ALT held: no snap, the element lands exactly where aimed.
+        SnapGuide guide = editor.view().getGuides().get(0);
+        Checks.check("the guide is a vertical line at the edge it snapped to",
+                guide.isVertical() && Checks.eq(guide.getPosition(), 0f));
+        editor.release();
+
+        // Same drag with snapping suspended: the element lands exactly where aimed.
+        editor.setSnappingSuspended(true);
         place(watermark, Anchor.TOP_LEFT, 100f, 100f);
-        hud.renderFrame();
+        editor.update(0f, 0f);
         Bounds again = HudLayoutTests.boundsOf(hud, "watermark");
-        post(client, press(again.getCenterX(), again.getCenterY()));
-        client.getPlatform().setMouse(3f + again.getWidth() / 2f, again.getCenterY());
-        hud.renderFrame();
-        Checks.checkEquals("holding ALT suspends snapping",
+        editor.press(again.getCenterX(), again.getCenterY());
+        editor.update(3f + again.getWidth() / 2f, again.getCenterY());
+        Checks.checkEquals("suspending snapping lands it exactly where aimed",
                 3f, HudLayoutTests.boundsOf(hud, "watermark").getX());
-        post(client, release(0f, 0f));
-
-        // Releasing ALT must clear the flag even if the adapter reports modifiers oddly.
-        post(client, new KeyEvent(Key.LEFT_ALT, ALT, false));
-        Checks.check("releasing ALT re-enables snapping", !editor.isSuspendSnapping());
+        Checks.check("and records no guide", editor.view().getGuides().isEmpty());
+        editor.release();
 
         // ---- locking ------------------------------------------------------------------------
         place(watermark, Anchor.TOP_LEFT, 300f, 200f);
         watermark.setLocked(true);
-        hud.renderFrame();
+        editor.update(0f, 0f);
         Bounds locked = HudLayoutTests.boundsOf(hud, "watermark");
-        post(client, press(locked.getCenterX(), locked.getCenterY()));
+        editor.press(locked.getCenterX(), locked.getCenterY());
         Checks.checkEquals("a locked element can still be selected, so it can be unlocked",
                 "watermark", editor.getSelectedId());
         Checks.check("but no drag starts", !editor.isDragging());
+        Checks.check("and the view offers no handles for it",
+                editor.view().getHandles().isEmpty());
 
-        client.getPlatform().setMouse(700f, 400f);
-        hud.renderFrame();
+        editor.update(700f, 400f);
         Checks.checkEquals("and it does not move", 300f,
                 HudLayoutTests.boundsOf(hud, "watermark").getX());
 
@@ -162,7 +159,7 @@ public final class HudEditorTests {
 
         editor.toggleLockSelected();
         Checks.check("the editor can unlock it again", !watermark.isLocked());
-        post(client, release(0f, 0f));
+        editor.release();
 
         // ---- hiding ---------------------------------------------------------------------------
         editor.select("watermark");
@@ -170,39 +167,43 @@ public final class HudEditorTests {
         Checks.check("hiding is reversible from the editor", watermark.isHidden());
         Checks.check("a hidden element stays selectable while editing",
                 HudLayoutTests.findIn(hud.resolve(true), "watermark") != null);
+        Checks.check("and the view says which elements are hidden, without dimming them itself",
+                hiddenIn(editor.view()) == 1);
         editor.toggleHiddenSelected();
         Checks.check("and can be unhidden", !watermark.isHidden());
 
-        // ---- keyboard -----------------------------------------------------------------------------
+        // ---- nudging and ordering -------------------------------------------------------------
+        // These were keybinds baked into Core. They are plain methods now, and the
+        // client decides which key, if any, calls them.
         place(watermark, Anchor.TOP_LEFT, 300f, 200f);
-        hud.renderFrame();
+        editor.update(0f, 0f);
         editor.select("watermark");
 
-        post(client, new KeyEvent(Key.RIGHT, NONE, true));
-        Checks.checkEquals("an arrow key nudges by one pixel", 301f,
+        editor.nudgeSelected(1f, 0f);
+        Checks.checkEquals("nudging moves by exactly what it is given", 301f,
                 HudLayoutTests.boundsOf(hud, "watermark").getX());
 
-        post(client, new KeyEvent(Key.DOWN, EnumSet.of(Modifier.SHIFT), true));
-        Checks.checkEquals("shift nudges by ten", 210f,
+        editor.nudgeSelected(0f, 10f);
+        Checks.checkEquals("on either axis", 210f,
                 HudLayoutTests.boundsOf(hud, "watermark").getY());
 
-        post(client, new KeyEvent(Key.L, NONE, true));
-        Checks.check("L locks the selection", watermark.isLocked());
-        post(client, new KeyEvent(Key.L, NONE, true));
+        editor.toggleLockSelected();
+        Checks.check("locking is a method, not a key", watermark.isLocked());
+        editor.toggleLockSelected();
 
-        post(client, new KeyEvent(Key.PAGE_UP, NONE, true));
-        Checks.check("page up raises z-order", watermark.getZOrder() > dial.getZOrder());
+        editor.bringSelectedToFront();
+        Checks.check("so is raising z-order", watermark.getZOrder() > dial.getZOrder());
 
-        post(client, new KeyEvent(Key.R, NONE, true));
-        Checks.check("R resets the selection to its default layout",
+        editor.resetSelected();
+        Checks.check("and resetting to the declared default",
                 watermark.getAnchor() == Anchor.TOP_LEFT && Checks.eq(watermark.getOffsetX(), 4f));
 
         // ---- scaling ------------------------------------------------------------------------------
         editor.select("dial");
         float beforeScale = dial.getScale();
-        post(client, new ScrollEvent(1f, 0f, 0f));
-        Checks.check("scrolling scales the selection", dial.getScale() > beforeScale);
-        post(client, new ScrollEvent(-1f, 0f, 0f));
+        editor.scaleSelected(0.05f);
+        Checks.check("scaling the selection works off a delta", dial.getScale() > beforeScale);
+        editor.scaleSelected(-0.05f);
         Checks.checkEquals("and back the other way", beforeScale, dial.getScale());
 
         // ---- resize handles ------------------------------------------------------------------------
@@ -210,66 +211,68 @@ public final class HudEditorTests {
         // element anchored into a screen corner had that handle off-screen and
         // permanently unclickable. Corner anchoring is the common case.
         place(dial, Anchor.TOP_LEFT, 0f, 0f);
-        hud.renderFrame();
+        editor.update(0f, 0f);
         editor.select("dial");
-        post(client, press(20f, 20f));
+        editor.press(20f, 20f);
         Checks.check("an element in the screen corner is still selectable",
                 "dial".equals(editor.getSelectedId()));
-        post(client, press(3f, 3f));
+        editor.release();
+        editor.press(3f, 3f);
         Checks.check("its top-left handle flips inside and is grabbable",
                 editor.getResizing() != null);
-        post(client, release(0f, 0f));
+        editor.release();
 
         place(dial, Anchor.TOP_LEFT, 300f, 300f);
-        hud.renderFrame();
+        editor.update(0f, 0f);
         editor.select("dial");
         Bounds dialBounds = HudLayoutTests.boundsOf(hud, "dial");
-        // With room available, the handle sits outside the element proper.
-        post(client, press(dialBounds.getRight() + 5f, dialBounds.getBottom() + 5f));
-        Checks.check("with room to spare the handle sits outside the element",
-                editor.getResizing() == HudEditor.Handle.BOTTOM_RIGHT);
 
-        client.getPlatform().setMouse(dialBounds.getX() + 80f, dialBounds.getY() + 80f);
-        hud.renderFrame();
+        // The rectangles the view publishes are the ones press() actually hits.
+        Bounds published = editor.view().getHandles().get(HudEditor.Handle.BOTTOM_RIGHT);
+        editor.press(published.getCenterX(), published.getCenterY());
+        Checks.check("the handle the view publishes is the handle that grabs",
+                editor.getResizing() == HudEditor.Handle.BOTTOM_RIGHT);
+        Checks.check("with room to spare it sits outside the element",
+                published.getX() > dialBounds.getRight());
+
+        editor.update(dialBounds.getX() + 80f, dialBounds.getY() + 80f);
         Checks.check("dragging the handle scales the element", dial.getScale() > 1f);
         Checks.check("and the opposite corner stays put",
                 Checks.eq(HudLayoutTests.boundsOf(hud, "dial").getX(), dialBounds.getX()));
-        post(client, release(0f, 0f));
+        editor.release();
         dial.setScale(1f);
 
-        // ---- escaping -----------------------------------------------------------------------------------
-        editor.select("dial");
-        post(client, new KeyEvent(Key.ESCAPE, NONE, true));
-        Checks.check("escape clears the selection first", editor.getSelectedId() == null);
-        Checks.check("leaving the editor open", hud.isEditing());
-
-        post(client, new KeyEvent(Key.ESCAPE, NONE, true));
-        Checks.check("a second escape closes the editor", !hud.isEditing());
-
         // ---- closing ---------------------------------------------------------------------------------------
+        editor.select("dial");
+        editor.deselect();
+        Checks.check("deselecting clears the selection", editor.getSelectedId() == null);
+        Checks.check("and leaves the editor open", hud.isEditing());
+
+        hud.closeEditor();
         Checks.check("closing clears the editing flag", !hud.isEditing());
         Checks.check("and the selection", editor.getSelectedId() == null);
+        Checks.check("a closed editor yields an inactive, empty view",
+                !editor.view().isActive() && editor.view().getPlacements().isEmpty());
 
-        MouseEvent afterClose = post(client, press(400f, 300f));
-        Checks.check("input passes through once closed", !afterClose.isCancelled());
+        editor.press(400f, 300f);
+        Checks.check("and a press on a closed editor selects nothing",
+                editor.getSelectedId() == null);
 
-        hud.renderFrame();
+        hud.resolve(false);
         Checks.check("elements stop seeing the editing flag",
                 !client.getClock().isSawEditing());
     }
 
     // ------------------------------------------------------------------- helpers
 
-    private static <T extends dev.px.core.event.Event> T post(TestClient client, T event) {
-        return client.getCore().getBus().post(event);
-    }
-
-    private static MouseEvent press(float x, float y) {
-        return new MouseEvent(MouseButton.LEFT, ALT, true, x, y);
-    }
-
-    private static MouseEvent release(float x, float y) {
-        return new MouseEvent(MouseButton.LEFT, ALT, false, x, y);
+    private static int hiddenIn(HudEditorView view) {
+        int hidden = 0;
+        for (Placement placement : view.getPlacements()) {
+            if (placement.getLayout().isHidden()) {
+                hidden++;
+            }
+        }
+        return hidden;
     }
 
     private static void place(HudLayout layout, Anchor anchor, float offsetX, float offsetY) {

@@ -3,12 +3,14 @@ package dev.px.core.test.harness;
 import dev.px.core.Core;
 import dev.px.core.hud.HudLayout;
 import dev.px.core.render.Color;
+import dev.px.core.render.Render;
 import dev.px.core.render.theme.Theme;
 import dev.px.core.test.example.ExampleBrokenElement;
 import dev.px.core.test.example.ExampleCategories;
 import dev.px.core.test.example.ExampleClock;
 import dev.px.core.test.example.ExampleDial;
 import dev.px.core.test.example.ExampleEchoCommand;
+import dev.px.core.test.example.ExampleHudRenderers;
 import dev.px.core.test.example.ExampleKillAura;
 import dev.px.core.test.example.ExampleRadar;
 import dev.px.core.test.example.ExampleSprint;
@@ -87,9 +89,16 @@ public final class TestClient {
                 new ExampleRadar(),
                 new ExampleBrokenElement());
 
+        // The look of those elements, which is the client's half and not Core's.
+        ExampleHudRenderers.installInto(core.getHudService().getRenderers());
+
         // No Render2D or Render3D is installed anywhere in this file. Every draw
         // call the suites trigger is a no-op, which is the point.
         core.start();
+
+        // Measuring, though, is Core's half of the HUD contract, so it is exercised
+        // for real: a font that answers widths without drawing anything.
+        Render.setDefaultFont(new FixedFont());
         return new TestClient(core, platform);
     }
 
@@ -100,6 +109,7 @@ public final class TestClient {
     public void reset() {
         core.getHudService().closeEditor();
         core.getHudService().resetAll();
+        core.getHudService().getEditor().setSnappingSuspended(false);
 
         // Module state too, or a suite inherits whatever the previous one toggled.
         core.getModuleRegistry().disableAll();

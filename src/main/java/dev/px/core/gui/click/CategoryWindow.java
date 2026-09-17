@@ -1,5 +1,8 @@
 package dev.px.core.gui.click;
 
+import dev.px.core.layout.Align;
+import dev.px.core.layout.Content;
+
 import com.google.gson.JsonObject;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.Panel;
@@ -66,36 +69,33 @@ public final class CategoryWindow extends Panel {
     }
 
     @Override
-    protected float headerHeight() {
-        return GuiStyle.TITLE_HEIGHT;
-    }
-
-    @Override
     protected boolean showsChildren() {
         return !collapsed;
     }
 
+    /**
+     * The title bar. Its measured height is what {@link dev.px.core.gui.Panel}
+     * reserves above the module buttons, so the two can never disagree.
+     */
     @Override
-    public void render(float windowX, float windowY, float w, float h) {
-        float radius = GuiStyle.radius(w, h);
-        Render.roundRect(windowX, windowY, w, h, radius, GuiStyle.background());
-
+    protected void content(Content c) {
+        float height = GuiStyle.titleHeight();
+        c.height(height).padding(GuiStyle.padding(), 0f).align(Align.CENTER);
         // The title bar carries the accent so the window reads as belonging to the
-        // theme without every row having to be tinted.
-        Render.roundGradient(windowX, windowY, w, GuiStyle.TITLE_HEIGHT,
-                Math.min(radius, GuiStyle.TITLE_HEIGHT / 2f),
+        // theme without every row having to be tinted. A backdrop rather than a
+        // part, so the name sits on it instead of under it.
+        c.backdrop((x, y, w, h) -> Render.roundGradient(x, y, w, h,
+                Math.min(GuiStyle.radius(), height / 2f),
                 GuiStyle.accent(0f), GuiStyle.accent(1f),
-                GuiStyle.accent(1f), GuiStyle.accent(0f));
-
-        Render.text(category.getName(), windowX + GuiStyle.PADDING,
-                windowY + (GuiStyle.TITLE_HEIGHT - Render.textHeight()) / 2f, GuiStyle.text());
+                GuiStyle.accent(1f), GuiStyle.accent(0f)));
+        c.text(category.getName(), GuiStyle.text());
     }
 
     @Override
     protected boolean onClick(float pointerX, float pointerY, MouseButton button) {
         // Only the title bar is grabbable. A press below it that got this far was
         // declined by whatever module button it landed on.
-        if (pointerY > getBounds().getY() + GuiStyle.TITLE_HEIGHT) {
+        if (pointerY > getBounds().getY() + GuiStyle.titleHeight()) {
             return false;
         }
         if (button == MouseButton.RIGHT) {

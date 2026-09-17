@@ -115,9 +115,9 @@ public final class Core {
         this.moduleRegistry = new ModuleRegistry(categories, bus);
         this.commandRegistry = services.register(new CommandRegistry(bus, platform, logger));
         this.inputService = services.register(new InputService(bus, moduleRegistry, platform));
-        this.hudService = services.register(new HudService(logger, bus, platform));
+        this.hudService = services.register(new HudService(logger, platform));
         this.guiService = services.register(
-                new GuiService(logger, bus, platform, moduleRegistry, categories, themeService));
+                new GuiService(logger, platform, moduleRegistry, categories, themeService));
 
         ThreadedModule.bindThreadService(threadService);
 
@@ -142,8 +142,6 @@ public final class Core {
         registerConfigSections();
 
         Render.setDefaultFont(fontService.getDefaultFont());
-        // The editor outlines selections in the active accent colour.
-        hudService.getEditor().setAccent(themeService::getPrimary);
 
         // Defaults first, then the config, so a saved profile overrides them rather
         // than the other way round.

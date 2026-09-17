@@ -1,7 +1,8 @@
 package dev.px.core.gui;
 
-import dev.px.core.hud.Bounds;
-import dev.px.core.hud.Shape;
+import dev.px.core.layout.Bounds;
+import dev.px.core.layout.Content;
+import dev.px.core.layout.Shape;
 import dev.px.core.input.Key;
 import dev.px.core.input.Modifier;
 import dev.px.core.input.MouseButton;
@@ -15,20 +16,18 @@ import java.util.Set;
 /**
  * One node of the GUI tree.
  *
- * <p>Two methods are mandatory: how tall you are at a given width, and how to
- * draw yourself. That is the whole contract, and it is deliberately the whole
- * contract &mdash; the same promise {@link dev.px.core.hud.HudElement} makes.
- * Stacking, hit routing, drag tracking, focus and clipping are handled above
- * this class, so writing a component never means reading the layout or the input
- * code.
+ * <p>One method is mandatory, and it is the same one a
+ * {@link dev.px.core.hud.HudElement} writes: describe what you are made of. Your
+ * height is what that measures and your appearance is that same description
+ * drawn, so the two cannot drift apart. Stacking, hit routing, drag tracking,
+ * focus and clipping are handled above this class, so writing a component never
+ * means reading the layout or the input code.
  *
  * <pre>{@code
  * public final class Divider extends Component {
  *
- *     @Override public float getPreferredHeight(float width) { return 1f; }
- *
- *     @Override public void render(float x, float y, float w, float h) {
- *         Render.rect(x, y, w, h, GuiStyle.outline());
+ *     @Override protected void content(Content c) {
+ *         c.rect(0f, 1f, GuiStyle.outline());
  *     }
  * }
  * }</pre>
@@ -58,24 +57,67 @@ public abstract class Component {
     @Getter
     private Bounds bounds = Bounds.EMPTY;
 
+    /** This component's own content, as last laid out. */
+    private Content placed;
+
+    /** How tall that content is, which is not the same as {@link #bounds} once children are stacked. */
+    private float contentHeight;
+
     // ------------------------------------------------------------- contract
 
     /**
-     * @param width the width this component will be laid out at
-     * @return the height it needs
+     * Describes what this component is made of, once per layout.
      *
-     * <p>Expected to change between frames: a dropdown is taller while open, a
-     * group taller while expanded. Nothing caches it.
+     * <p>The only method most components write. Its height is the component's
+     * height and its parts are what gets drawn, so the two cannot disagree
+     * &mdash; the same contract {@link dev.px.core.hud.HudElement} makes, and for
+     * the same reason. A component that draws nothing of its own, such as a plain
+     * container, leaves it alone.
+     *
+     * <p>Two things matter here that do not in a HUD element, because a component
+     * is given a width rather than sizing to its content:
+     *
+     * <ul>
+     *   <li>{@link Content#fill()} absorbs the slack, which is how a row puts
+     *       its label on the left and its value on the right.</li>
+     *   <li>{@link Content#custom(String, float, float, dev.px.core.hud.Draw)}
+     *       names a part so {@link #part} can find it again. A widget that maps a
+     *       click onto something it drew &mdash; a slider track, a toggle knob
+     *       &mdash; asks for that rectangle rather than working it out a second
+     *       time and getting it subtly wrong.</li>
+     * </ul>
+     *
+     * <pre>{@code
+     * @Override protected void content(Content c) {
+     *     c.height(GuiStyle.rowHeight()).padding(GuiStyle.padding()).align(Align.CENTER);
+     *     c.background(GuiStyle.surface(), GuiStyle.radius());
+     *     c.row(r -> {
+     *         r.align(Align.CENTER);
+     *         r.text(label, GuiStyle.text());
+     *         r.fill();
+     *         r.custom("knob", 14f, 7f, this::drawKnob);
+     *     });
+     * }
+     * }</pre>
+     *
+     * <p>Called every layout and never cached: a dropdown is taller while open, a
+     * group taller while expanded, and neither goes through anywhere that could
+     * invalidate a cache.
      */
-    public abstract float getPreferredHeight(float width);
+    protected void content(Content content) {
+    }
 
     /**
-     * Draws the component with its top-left corner at {@code (x, y)}.
+     * Fills the component's whole resolved rectangle, behind its content and its
+     * children.
      *
-     * <p>Children are drawn afterwards by the engine, so anything drawn here
-     * lands behind them. That is what makes a panel background work.
+     * <p>The one thing {@link #content} cannot express, because it is measured
+     * before the children are laid out and so does not know the final height. A
+     * window background is the case this exists for; almost nothing else needs
+     * it.
      */
-    public abstract void render(float x, float y, float w, float h);
+    protected void renderBackdrop(float x, float y, float w, float h) {
+    }
 
     /**
      * The clickable region within the given rectangle.
@@ -258,16 +300,70 @@ public abstract class Component {
     // --------------------------------------------------------------- layout
 
     /**
+     * @param width the width this component will be laid out at
+     * @return the height it needs
+     *
+     * <p>Measured from {@link #content}, so there is nothing to keep in step.
+     */
+    public float getPreferredHeight(float width) {
+        return describe(width).size().getHeight();
+    }
+
+    /**
+     * Builds and measures this component's content at a given width.
+     *
+     * <p>Rebuilt rather than cached, for the reason everything else in this
+     * package is: what a component is made of changes between frames.
+     */
+    protected final Content describe(float width) {
+        Content content = Content.column();
+        content.width(width);
+        content(content);
+        content.measure();
+        return content;
+    }
+
+    /**
      * Places this component and everything under it.
      *
      * <p>The default puts the component at the given position, at the given
-     * width, at whatever height it asked for, and leaves its children unplaced.
-     * {@link Panel} overrides it to stack them. A component with children and no
-     * stacking behaviour of its own should extend {@code Panel} rather than
-     * reimplement this.
+     * width, at whatever height its content measured, and leaves its children
+     * unplaced. {@link Panel} overrides it to stack them. A component with
+     * children and no stacking behaviour of its own should extend {@code Panel}
+     * rather than reimplement this.
      */
     public void layout(float x, float y, float width) {
-        setBounds(Bounds.of(x, y, width, getPreferredHeight(width)));
+        Content content = describe(width);
+        float height = content.size().getHeight();
+        placeContent(content, x, y, width, height);
+        setBounds(Bounds.of(x, y, width, height));
+    }
+
+    /**
+     * Records the laid-out content, so drawing and {@link #part} use the geometry
+     * layout already found rather than working it out again.
+     */
+    protected final void placeContent(Content content, float x, float y, float width, float height) {
+        content.layout(x, y, width, height);
+        this.placed = content;
+        this.contentHeight = height;
+    }
+
+    /**
+     * @return the rectangle a named part of this component's content ended up in,
+     *         or null
+     *
+     * <p>Valid once the component has been laid out. What a click handler asks so
+     * that the region it responds to is exactly the region it drew.
+     */
+    public final Bounds part(String name) {
+        return placed == null ? null : placed.find(name);
+    }
+
+    /** @return whether a point is inside the named part. */
+    public final boolean hitsPart(String name, float x, float y) {
+        Bounds at = part(name);
+        return at != null && at.contains(x, y);
     }
 
     protected final void setBounds(Bounds resolved) {
@@ -280,13 +376,19 @@ public abstract class Component {
      * Draws this component and then its visible children, in order.
      *
      * <p>Final: the draw order is a property of the tree, not something an
-     * individual component gets to redefine.
+     * individual component gets to redefine. The backdrop goes down first, then
+     * this component's own content, then the children on top.
      */
     public final void renderTree() {
         if (!isVisible()) {
             return;
         }
-        render(bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight());
+        renderBackdrop(bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight());
+        if (placed != null) {
+            // Drawn at the height its content measured, not the component's full
+            // height: a panel is as tall as its children, its own row is not.
+            placed.draw(bounds.getX(), bounds.getY(), bounds.getWidth(), contentHeight);
+        }
         for (Component child : visibleChildren()) {
             child.renderTree();
         }

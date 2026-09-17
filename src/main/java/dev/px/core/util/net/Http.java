@@ -1,5 +1,7 @@
 package dev.px.core.util.net;
 
+import dev.px.core.layout.Content;
+
 import dev.px.core.util.Validate;
 
 import java.io.ByteArrayOutputStream;

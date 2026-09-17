@@ -19,33 +19,171 @@ import dev.px.core.render.theme.ThemeService;
  * before startup &mdash; or in a test with no client at all &mdash; draws
  * something rather than throwing.
  *
- * <p>The metrics are constants because they are the grid the whole GUI is laid
- * out on: a row is one row high everywhere, and a component that invents its own
- * row height stops lining up with every other component in the panel.
+ * <p>The metrics are a grid, not constants. A row is one row high everywhere and
+ * a component that invents its own height stops lining up with the rest of the
+ * panel &mdash; but <em>which</em> height that is belongs to whoever is building
+ * the client. {@link #metrics(Metrics)} replaces them wholesale, and every
+ * component Core ships reads them through these accessors, so a chunkier or
+ * tighter GUI costs one call rather than nine rewritten rows.
+ *
+ * <pre>{@code
+ * GuiStyle.metrics(GuiStyle.Metrics.builder()
+ *         .rowHeight(18f)
+ *         .padding(5f)
+ *         .windowWidth(130f)
+ *         .build());
+ * }</pre>
  */
 public final class GuiStyle {
 
-    /** Height of a single setting row, and of a module button. */
-    public static final float ROW_HEIGHT = 13f;
-
-    /** Inset between a panel's edge and its children. */
-    public static final float PADDING = 3f;
-
-    /** Gap between stacked children. */
-    public static final float SPACING = 1f;
-
-    /** Width of a category window. Fixed, so nothing has to measure text to lay out. */
-    public static final float WINDOW_WIDTH = 100f;
-
-    /** Height of a window's draggable title bar. */
-    public static final float TITLE_HEIGHT = 15f;
-
-    /** Indent applied to a row nested inside a group or a dropdown. */
-    public static final float INDENT = 6f;
-
     private static volatile ThemeService themes;
+    private static volatile Metrics metrics = Metrics.defaults();
 
     private GuiStyle() {
+    }
+
+    // ---------------------------------------------------------------- metrics
+
+    /**
+     * The measurements the GUI is laid out on.
+     *
+     * <p>Immutable, and replaced as a set rather than field by field: a row
+     * height that no longer matches the padding around it is how a GUI stops
+     * lining up, and swapping the whole grid at once makes that hard to do by
+     * accident.
+     */
+    public static final class Metrics {
+
+        private final float rowHeight;
+        private final float padding;
+        private final float spacing;
+        private final float windowWidth;
+        private final float titleHeight;
+        private final float indent;
+
+        private Metrics(Builder builder) {
+            this.rowHeight = builder.rowHeight;
+            this.padding = builder.padding;
+            this.spacing = builder.spacing;
+            this.windowWidth = builder.windowWidth;
+            this.titleHeight = builder.titleHeight;
+            this.indent = builder.indent;
+        }
+
+        public static Metrics defaults() {
+            return builder().build();
+        }
+
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        public float getRowHeight() {
+            return rowHeight;
+        }
+
+        public float getPadding() {
+            return padding;
+        }
+
+        public float getSpacing() {
+            return spacing;
+        }
+
+        public float getWindowWidth() {
+            return windowWidth;
+        }
+
+        public float getTitleHeight() {
+            return titleHeight;
+        }
+
+        public float getIndent() {
+            return indent;
+        }
+
+        public static final class Builder {
+
+            private float rowHeight = 13f;
+            private float padding = 3f;
+            private float spacing = 1f;
+            private float windowWidth = 100f;
+            private float titleHeight = 15f;
+            private float indent = 6f;
+
+            /** Height of a single setting row, and of a module button. */
+            public Builder rowHeight(float value) {
+                this.rowHeight = value;
+                return this;
+            }
+
+            /** Inset between a panel's edge and its children. */
+            public Builder padding(float value) {
+                this.padding = value;
+                return this;
+            }
+
+            /** Gap between stacked children. */
+            public Builder spacing(float value) {
+                this.spacing = value;
+                return this;
+            }
+
+            /** Width of a category window. Fixed, so nothing measures text to lay out. */
+            public Builder windowWidth(float value) {
+                this.windowWidth = value;
+                return this;
+            }
+
+            /** Height of a window's draggable title bar. */
+            public Builder titleHeight(float value) {
+                this.titleHeight = value;
+                return this;
+            }
+
+            /** Indent applied to a row nested inside a group or a dropdown. */
+            public Builder indent(float value) {
+                this.indent = value;
+                return this;
+            }
+
+            public Metrics build() {
+                return new Metrics(this);
+            }
+        }
+    }
+
+    /** Replaces the whole grid. Call before the GUI is built, i.e. before {@code Core.start()}. */
+    public static void metrics(Metrics replacement) {
+        metrics = replacement == null ? Metrics.defaults() : replacement;
+    }
+
+    public static Metrics metrics() {
+        return metrics;
+    }
+
+    public static float rowHeight() {
+        return metrics.getRowHeight();
+    }
+
+    public static float padding() {
+        return metrics.getPadding();
+    }
+
+    public static float spacing() {
+        return metrics.getSpacing();
+    }
+
+    public static float windowWidth() {
+        return metrics.getWindowWidth();
+    }
+
+    public static float titleHeight() {
+        return metrics.getTitleHeight();
+    }
+
+    public static float indent() {
+        return metrics.getIndent();
     }
 
     /** Points the GUI at the active theme. Called by {@link GuiService#start()}. */

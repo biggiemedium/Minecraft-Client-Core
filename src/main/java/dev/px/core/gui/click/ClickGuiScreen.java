@@ -1,5 +1,7 @@
 package dev.px.core.gui.click;
 
+import dev.px.core.layout.Content;
+
 import com.google.gson.JsonObject;
 import dev.px.core.config.Json;
 import dev.px.core.gui.Component;
@@ -89,7 +91,7 @@ public final class ClickGuiScreen extends Screen {
     }
 
     private static float defaultX(int index) {
-        return MARGIN + index * (GuiStyle.WINDOW_WIDTH + MARGIN);
+        return MARGIN + index * (GuiStyle.windowWidth() + MARGIN);
     }
 
     // ---------------------------------------------------------------- layout
@@ -104,10 +106,13 @@ public final class ClickGuiScreen extends Screen {
     @Override
     protected void layoutChildren() {
         for (Component child : getChildren()) {
+            if (!(child instanceof CategoryWindow)) {
+                continue;
+            }
             CategoryWindow window = (CategoryWindow) child;
             window.layout(clamp(window.getX(), getScreenWidth()),
                     clamp(window.getY(), getScreenHeight()),
-                    GuiStyle.WINDOW_WIDTH);
+                    GuiStyle.windowWidth());
         }
     }
 
@@ -115,9 +120,11 @@ public final class ClickGuiScreen extends Screen {
         return screenSize <= 0f ? position : MathUtil.clamp(position, 0f, Math.max(0f, screenSize - MIN_VISIBLE));
     }
 
+    /** The scrim over the game. Everything else on this screen is a window. */
     @Override
-    public void render(float x, float y, float w, float h) {
-        Render.rect(0f, 0f, getScreenWidth(), getScreenHeight(), GuiStyle.backdrop());
+    protected void content(Content c) {
+        c.custom("scrim", getScreenWidth(), getScreenHeight(),
+                (x, y, w, h) -> Render.rect(x, y, w, h, GuiStyle.backdrop()));
     }
 
     // ----------------------------------------------------------- persistence

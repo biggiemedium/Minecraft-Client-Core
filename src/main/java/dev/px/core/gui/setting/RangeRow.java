@@ -1,5 +1,7 @@
 package dev.px.core.gui.setting;
 
+import dev.px.core.layout.Content;
+
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.Screen;
 import dev.px.core.gui.SettingComponent;
@@ -30,25 +32,21 @@ public final class RangeRow extends SettingComponent<RangeSetting> {
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
-        renderRow(x, y, w, false);
-        renderLabel(x, y);
-        renderValue(getSetting().displayValue(), x, y, w);
+    protected void content(Content c) {
+        header(c, false, row -> value(row, getSetting().displayValue()));
+        track(c, TRACK_HEIGHT, this::drawTrack);
+    }
 
-        float trackX = x + GuiStyle.PADDING;
-        float trackWidth = Math.max(0f, w - GuiStyle.PADDING * 2f);
-        float trackY = y + GuiStyle.ROW_HEIGHT - TRACK_HEIGHT - 1f;
-
-        Render.roundRect(trackX, trackY, trackWidth, TRACK_HEIGHT, TRACK_HEIGHT / 2f, GuiStyle.outline());
+    private void drawTrack(float x, float y, float w, float h) {
+        Render.roundRect(x, y, w, h, h / 2f, GuiStyle.outline());
 
         float lower = progressOf(getSetting().get().getLower());
         float upper = progressOf(getSetting().get().getUpper());
-        Render.roundRect(trackX + trackWidth * lower, trackY, trackWidth * (upper - lower),
-                TRACK_HEIGHT, TRACK_HEIGHT / 2f, GuiStyle.accent());
+        Render.roundRect(x + w * lower, y, w * (upper - lower), h, h / 2f, GuiStyle.accent());
 
-        float centerY = trackY + TRACK_HEIGHT / 2f;
-        Render.circle(trackX + trackWidth * lower, centerY, HANDLE_RADIUS, GuiStyle.text());
-        Render.circle(trackX + trackWidth * upper, centerY, HANDLE_RADIUS, GuiStyle.text());
+        float centerY = y + h / 2f;
+        Render.circle(x + w * lower, centerY, HANDLE_RADIUS, GuiStyle.text());
+        Render.circle(x + w * upper, centerY, HANDLE_RADIUS, GuiStyle.text());
     }
 
     @Override
@@ -56,7 +54,7 @@ public final class RangeRow extends SettingComponent<RangeSetting> {
         if (button != MouseButton.LEFT) {
             return false;
         }
-        float pressed = progressAt(pointerX, getBounds().getX(), getBounds().getWidth());
+        float pressed = progressIn("track", pointerX);
         float lower = progressOf(getSetting().get().getLower());
         float upper = progressOf(getSetting().get().getUpper());
         draggingUpper = Math.abs(pressed - upper) <= Math.abs(pressed - lower);
@@ -75,7 +73,7 @@ public final class RangeRow extends SettingComponent<RangeSetting> {
     }
 
     private void apply(float pointerX) {
-        float progress = progressAt(pointerX, getBounds().getX(), getBounds().getWidth());
+        float progress = progressIn("track", pointerX);
         double value = getSetting().getMin() + (getSetting().getMax() - getSetting().getMin()) * progress;
         if (draggingUpper) {
             getSetting().setUpper(value);

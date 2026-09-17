@@ -2,10 +2,11 @@ package dev.px.core.test.suite;
 
 import dev.px.core.event.impl.Render2DEvent;
 import dev.px.core.hud.Anchor;
-import dev.px.core.hud.Bounds;
+import dev.px.core.layout.Bounds;
 import dev.px.core.hud.HudLayout;
 import dev.px.core.hud.HudService;
 import dev.px.core.hud.Placement;
+import dev.px.core.test.example.ExampleHudRenderers;
 import dev.px.core.test.harness.Checks;
 import dev.px.core.test.harness.TestClient;
 
@@ -190,17 +191,42 @@ public final class HudLayoutTests {
                         && Checks.eq(watermark.getScale(), 1f));
 
         // ---- resilience ------------------------------------------------------------------------------
+        // Drawing is the client's half now, so the failure comes from a renderer
+        // rather than an element -- and drawAll is what has to contain it.
         client.getBroken().setExplodeOnRender(true);
-        Checks.checkSurvives("an element that throws while rendering is contained", hud::renderFrame);
+        Checks.checkSurvives("a renderer that throws is contained", hud::drawAll);
         client.getBroken().setExplodeOnRender(false);
 
         client.getBroken().setExplodeOnMeasure(true);
-        Checks.checkSurvives("an element that throws while measuring is skipped", hud::renderFrame);
+        Checks.checkSurvives("an element that throws while measuring is skipped", hud::drawAll);
         Checks.check("and the others still resolve", hud.resolve(true).size() >= 4);
         client.getBroken().setExplodeOnMeasure(false);
 
-        Checks.checkSurvives("a frame renders with no Render2D backend installed",
-                () -> client.getCore().getBus().post(new Render2DEvent(0f, 854f, 480f)));
+        Checks.checkSurvives("a frame draws with no Render2D backend installed", hud::drawAll);
+
+        // Core no longer draws on its own. A renderer is the only thing that can
+        // see a draw happen, so it is the only honest way to assert one did not.
+        ExampleHudRenderers.resetDraws();
+        client.getCore().getBus().post(new Render2DEvent(0f, 854f, 480f));
+        Checks.checkEquals("Core draws nothing off a render event",
+                0, ExampleHudRenderers.getDraws());
+
+        hud.drawAll();
+        Checks.checkEquals("but drawAll runs the registered renderer", 1, ExampleHudRenderers.getDraws());
+
+        // ---- content is measured once, and a renderer overrides only the look ----
+        // The dial has a renderer that draws a flat square, yet its size still comes
+        // from the content it describes: a renderer replaces appearance, not geometry.
+        Checks.checkEquals("a renderer does not change the element's measured size",
+                client.getDial().getDiameter().getFloat(),
+                HudLayoutTests.boundsOf(hud, "dial").getWidth());
+
+        // A text element measures through the font, with no second method to drift.
+        float clockWidth = boundsOf(hud, "clock").getWidth();
+        client.getClock().setLiveText("13:45:59");
+        Checks.check("an element's size follows the content it describes",
+                boundsOf(hud, "clock").getWidth() > clockWidth);
+        client.getClock().setLiveText("13:45");
 
         // ---- Anchor.nearest ----------------------------------------------------------------------------
         Checks.check("nearest picks the corner a point sits in",

@@ -1,5 +1,7 @@
 package dev.px.core.gui.setting;
 
+import dev.px.core.layout.Content;
+
 import dev.px.core.gui.Screen;
 import dev.px.core.gui.SettingComponent;
 import dev.px.core.input.Bind;
@@ -43,10 +45,9 @@ public final class BindRow extends SettingComponent<BindSetting> {
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
-        renderRow(x, y, w, capturing);
-        renderLabel(x, y);
-        renderValue(capturing ? "..." : getSetting().get().getDisplay(), x, y, w);
+    protected void content(Content c) {
+        header(c, capturing, row ->
+                value(row, capturing ? "..." : getSetting().get().getDisplay()));
     }
 
     @Override

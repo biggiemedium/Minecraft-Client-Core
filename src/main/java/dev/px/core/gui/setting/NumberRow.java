@@ -1,6 +1,7 @@
 package dev.px.core.gui.setting;
 
 import dev.px.core.gui.GuiStyle;
+import dev.px.core.layout.Content;
 import dev.px.core.gui.Screen;
 import dev.px.core.gui.SettingComponent;
 import dev.px.core.input.MouseButton;
@@ -26,17 +27,10 @@ public final class NumberRow extends SettingComponent<NumberSetting<?>> {
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
-        renderRow(x, y, w, false);
-        renderLabel(x, y);
-        renderValue(getSetting().displayValue(), x, y, w);
-
-        float trackX = x + GuiStyle.PADDING;
-        float trackWidth = Math.max(0f, w - GuiStyle.PADDING * 2f);
-        float trackY = y + GuiStyle.ROW_HEIGHT - TRACK_HEIGHT - 1f;
-
-        Render.progressBar(trackX, trackY, trackWidth, TRACK_HEIGHT, TRACK_HEIGHT / 2f,
-                getSetting().progress(), GuiStyle.outline(), GuiStyle.accent());
+    protected void content(Content c) {
+        header(c, false, row -> value(row, getSetting().displayValue()));
+        track(c, TRACK_HEIGHT, (x, y, w, h) -> Render.progressBar(x, y, w, h, h / 2f,
+                getSetting().progress(), GuiStyle.outline(), GuiStyle.accent()));
     }
 
     @Override
@@ -60,6 +54,7 @@ public final class NumberRow extends SettingComponent<NumberSetting<?>> {
     }
 
     private void apply(float pointerX) {
-        getSetting().setProgress(progressAt(pointerX, getBounds().getX(), getBounds().getWidth()));
+        // Measured against the track as drawn, not recomputed from the row.
+        getSetting().setProgress(progressIn("track", pointerX));
     }
 }

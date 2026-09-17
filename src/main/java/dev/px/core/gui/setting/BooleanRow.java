@@ -1,6 +1,7 @@
 package dev.px.core.gui.setting;
 
 import dev.px.core.gui.GuiStyle;
+import dev.px.core.layout.Content;
 import dev.px.core.gui.SettingComponent;
 import dev.px.core.input.MouseButton;
 import dev.px.core.render.Color;
@@ -31,25 +32,20 @@ public final class BooleanRow extends SettingComponent<BooleanSetting> {
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
-        boolean on = getSetting().isOn();
-        knob.target(on);
+    protected void content(Content c) {
+        knob.target(getSetting().isOn());
+        header(c, false, row -> row.custom("switch", TRACK_WIDTH, TRACK_HEIGHT, this::drawSwitch));
+    }
+
+    private void drawSwitch(float x, float y, float w, float h) {
         float progress = knob.get();
 
-        renderRow(x, y, w, false);
-        renderLabel(x, y);
-
-        float trackX = x + w - GuiStyle.PADDING - TRACK_WIDTH;
-        float trackY = y + (GuiStyle.ROW_HEIGHT - TRACK_HEIGHT) / 2f;
-
         Color off = GuiStyle.outline();
-        Render.roundRect(trackX, trackY, TRACK_WIDTH, TRACK_HEIGHT, TRACK_HEIGHT / 2f,
-                off.lerp(GuiStyle.accent(), progress));
+        Render.roundRect(x, y, w, h, h / 2f, off.lerp(GuiStyle.accent(), progress));
 
-        float radius = TRACK_HEIGHT / 2f - 1f;
-        float travel = TRACK_WIDTH - TRACK_HEIGHT;
-        Render.circle(trackX + TRACK_HEIGHT / 2f + travel * progress, trackY + TRACK_HEIGHT / 2f,
-                radius, GuiStyle.text());
+        float radius = h / 2f - 1f;
+        float travel = w - h;
+        Render.circle(x + h / 2f + travel * progress, y + h / 2f, radius, GuiStyle.text());
     }
 
     @Override

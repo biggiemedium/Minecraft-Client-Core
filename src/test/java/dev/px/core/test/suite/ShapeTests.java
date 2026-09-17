@@ -1,8 +1,8 @@
 package dev.px.core.test.suite;
 
-import dev.px.core.hud.Bounds;
-import dev.px.core.hud.Shape;
-import dev.px.core.hud.Size;
+import dev.px.core.layout.Bounds;
+import dev.px.core.layout.Shape;
+import dev.px.core.layout.Size;
 import dev.px.core.math.Vec2;
 import dev.px.core.test.harness.Checks;
 

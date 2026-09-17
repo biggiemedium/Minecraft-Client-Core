@@ -1,41 +1,48 @@
 package dev.px.core.hud;
 
+import dev.px.core.layout.Content;
+import dev.px.core.layout.Shape;
+
 import dev.px.core.registry.Named;
 
 /**
- * Something drawn on the HUD.
+ * Something the HUD positions.
  *
- * <p>Two methods are mandatory: how big you are, and how to draw yourself. That
- * is the whole contract, and it is deliberately the whole contract &mdash; adding
- * an element type must never require understanding the layout engine. Anchoring,
- * scaling, clamping, z-order, hit testing, dragging and persistence are all
- * handled above this interface.
+ * <p>Two methods: who you are, and what you are made of. That is the whole
+ * contract, and it is deliberately the whole contract &mdash; adding an element
+ * type must never require understanding the layout engine. Anchoring, scaling,
+ * clamping, z-order, hit testing, dragging and persistence are all handled above
+ * this interface.
  *
- * <p>Everything here works in <b>natural, unscaled</b> coordinates. The element's
- * scale factor is applied by {@link HudService} as a transform, so an element
- * that never mentions scale is automatically scalable.
+ * <p><b>You describe your content once and get both size and appearance from
+ * it.</b> That is the point: the old arrangement had you measure yourself in one
+ * method and draw yourself in another, and the two drifted apart the first time
+ * anyone changed a padding. {@link #content} replaces both.
+ *
+ * <p>Core still owns the geometry and you still own the look. A client that
+ * wants to restyle an element it did not write registers a {@link HudRenderer}
+ * for that type, which replaces the element's own content entirely.
+ *
+ * <p>Everything here works in <b>natural, unscaled</b> coordinates. The
+ * element's scale factor is applied by {@link HudService#drawAll} as a transform
+ * around the whole element, so an element that never mentions scale is
+ * automatically scalable.
  *
  * <p>Core knows nothing about what an element shows. There is no FPS counter, no
- * armour bar and no module list in here; those are the adapter's, built on this.
+ * armour bar and no module list in here; those are the client's, built on this.
  *
  * <pre>{@code
- * public final class WatermarkElement extends AbstractHudElement {
+ * public final class WatermarkElement implements HudElement {
  *
- *     public WatermarkElement() {
- *         super("watermark", "Watermark");
- *     }
+ *     @Override public String getId() { return "watermark"; }
  *
- *     @Override
- *     public Size getPreferredSize() {
- *         return Size.of(Render.textWidth(label()) + 8f, Render.textHeight() + 6f);
- *     }
- *
- *     @Override
- *     public void render(float x, float y, float w, float h) {
- *         Render.roundRect(x, y, w, h, 3f, Core.themes().getSurface());
- *         Render.text(label(), x + 4f, y + 3f, Color.WHITE);
+ *     @Override public void content(Content c) {
+ *         c.background(Color.of(0, 0, 0, 120), 3f).padding(4f, 3f);
+ *         c.text("Core", Color.WHITE);
  *     }
  * }
+ *
+ * Core.hud().register(new WatermarkElement());   // that is the whole element
  * }</pre>
  */
 public interface HudElement extends Named {
@@ -50,34 +57,54 @@ public interface HudElement extends Named {
     String getId();
 
     /**
-     * Current natural size.
+     * Describes what this element is made of, once per frame.
      *
-     * <p>Expected to differ every frame. A clock is wider at 12:00 than 1:00, an
-     * ArrayList grows as modules are toggled. Nothing caches this, and the anchor
-     * formula makes a size change move the element in the right direction on its
-     * own.
-     */
-    Size getPreferredSize();
-
-    /**
-     * Draws the element with its top-left corner at {@code (x, y)}.
+     * <p>The only method you have to write. Core measures the box you describe
+     * to get the element's size, anchors and clamps it, and then draws that same
+     * box &mdash; so size and appearance come from one description and cannot
+     * disagree. See {@link Content} for the parts available, and
+     * {@link Content#custom} for drawing something it cannot express.
      *
-     * <p>{@code w} and {@code h} are the natural size reported by
-     * {@link #getPreferredSize()} this frame, not the scaled size: any scale
-     * factor is already applied as a transform around this call.
+     * <p>Called every frame, and expected to describe something different each
+     * time: a clock is wider at 12:00 than 1:00, an ArrayList grows as modules
+     * are toggled. Nothing is cached between frames, and the anchor formula makes
+     * a size change move the element in the right direction on its own.
+     *
+     * <p>This is also where an element should consult
+     * {@link AbstractHudElement#isEditing()} if it wants to show a stable sample
+     * while the user is positioning it.
+     *
+     * @param content the element's root box, a column
      */
-    void render(float x, float y, float w, float h);
+    void content(Content content);
 
     /**
      * The clickable region, in natural coordinates within the given rectangle.
      *
-     * <p>Defaults to the whole rectangle, which is right for almost everything.
-     * Override it when the drawn shape is not a rectangle, so that clicking the
-     * corner of a circular element correctly misses it and the editor's selection
-     * outline traces the real shape.
+     * <p><b>Returns null by default, which means "work it out from my
+     * content"</b> &mdash; and that is usually the right answer. A box with a
+     * rounded background gets a rounded region; an element made of several
+     * panels, such as a list of per-module rows, gets those panels rather than
+     * the rectangle around them, so the empty space beside a short row is
+     * correctly not part of the element. You declared that geometry when you
+     * described your content, and declaring it again here is how the two drift
+     * apart.
+     *
+     * <p>Override it only when the region genuinely is not what the content
+     * describes &mdash; most often when the content is a
+     * {@link Content#custom} callback, which Core cannot see inside:
+     *
+     * <pre>{@code
+     * // A dial drawn by a custom callback: only the disc is clickable.
+     * @Override public Shape getShape(float x, float y, float w, float h) {
+     *     return Shape.circle(x + w / 2f, y + h / 2f, w / 2f);
+     * }
+     * }</pre>
+     *
+     * @return the region, or null to derive it from {@link #content}
      */
     default Shape getShape(float x, float y, float w, float h) {
-        return Shape.rect(x, y, w, h);
+        return null;
     }
 
     /**
@@ -88,7 +115,7 @@ public interface HudElement extends Named {
         return HudLayout.at(Anchor.TOP_LEFT, 4f, 4f);
     }
 
-    /** Human-readable label for the editor. Free to change; {@link #getId()} is not. */
+    /** Human-readable label for an editor UI. Free to change; {@link #getId()} is not. */
     default String getDisplayName() {
         return getId();
     }

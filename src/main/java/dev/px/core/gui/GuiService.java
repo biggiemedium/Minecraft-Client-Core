@@ -3,17 +3,11 @@ package dev.px.core.gui;
 import com.google.gson.JsonObject;
 import dev.px.core.config.ConfigSection;
 import dev.px.core.config.Json;
-import dev.px.core.event.EventBus;
-import dev.px.core.event.Priority;
-import dev.px.core.event.Subscribe;
-import dev.px.core.event.impl.CharTypedEvent;
-import dev.px.core.event.impl.KeyEvent;
-import dev.px.core.event.impl.MouseEvent;
-import dev.px.core.event.impl.Render2DEvent;
-import dev.px.core.event.impl.ScrollEvent;
 import dev.px.core.gui.click.ClickGuiScreen;
 import dev.px.core.gui.setting.DefaultRenderers;
 import dev.px.core.input.Key;
+import dev.px.core.input.Modifier;
+import dev.px.core.input.MouseButton;
 import dev.px.core.module.CategoryRegistry;
 import dev.px.core.module.ModuleRegistry;
 import dev.px.core.platform.Platform;
@@ -22,6 +16,8 @@ import dev.px.core.render.theme.ThemeService;
 import dev.px.core.service.Service;
 import dev.px.core.util.CoreLogger;
 import lombok.Getter;
+
+import java.util.Set;
 
 /**
  * Owns the open screen, the input gate that sits in front of it, and the
@@ -33,14 +29,43 @@ import lombok.Getter;
  * whatever was showing, {@link #close} leaves. A client that wants a sub-screen
  * opens it and reopens the first one.
  *
- * <p><b>Input is taken exactly the way the HUD editor takes it.</b> The mouse,
- * key, scroll and character events are ordinary Core events subscribed at
- * {@link Priority#HIGHEST} and cancelled while a screen is open. That
- * cancellation <em>is</em> how input is swallowed: consumed first, nothing
- * behind the screen can fire, so no module toggles and no keystroke reaches the
- * game while a text field has focus. The adapter's obligation is unchanged from
- * the HUD editor's &mdash; a bare screen that posts those events and calls
- * {@link #close()} when dismissed.
+ * <p><b>Core subscribes to nothing and draws nothing on its own.</b> The GUI is
+ * hosted inside the game's own screen &mdash; {@code Screen} on modern versions,
+ * {@code GuiScreen} on older ones &mdash; and that screen already owns the mouse
+ * and keyboard while it is showing. So there is no event to intercept and
+ * nothing to cancel: the host calls in.
+ *
+ * <pre>{@code
+ * public final class CoreGuiScreen extends net.minecraft.client.gui.screen.Screen {
+ *
+ *     @Override public void render(MatrixStack stack, int mx, int my, float delta) {
+ *         Core.gui().renderFrame();
+ *     }
+ *
+ *     @Override public boolean mouseClicked(double x, double y, int button) {
+ *         return Core.gui().mousePressed((float) x, (float) y, MouseButton.byIndex(button));
+ *     }
+ *
+ *     @Override public boolean mouseReleased(double x, double y, int button) {
+ *         Core.gui().mouseReleased((float) x, (float) y);
+ *         return true;
+ *     }
+ *
+ *     @Override public boolean keyPressed(int key, int scancode, int mods) {
+ *         Key resolved = Keys.fromGlfw(key);
+ *         if (!Core.gui().keyPressed(resolved, Keys.modifiers(mods)) && resolved == Key.ESCAPE) {
+ *             onClose();
+ *         }
+ *         return true;
+ *     }
+ *
+ *     @Override public boolean charTyped(char typed, int mods) {
+ *         return Core.gui().charTyped(typed);
+ *     }
+ *
+ *     @Override public void removed() { Core.gui().close(); }
+ * }
+ * }</pre>
  *
  * <p>Drags are driven from the frame loop rather than from a move event, which
  * is why the list above has no mouse-move in it.
@@ -49,7 +74,6 @@ import lombok.Getter;
 public final class GuiService implements Service, ConfigSection {
 
     private final CoreLogger logger;
-    private final EventBus bus;
     private final Platform platform;
     private final ModuleRegistry modules;
     private final CategoryRegistry categories;
@@ -65,10 +89,9 @@ public final class GuiService implements Service, ConfigSection {
     /** Whether a screen has already been reported as broken, so it logs once. */
     private boolean warned;
 
-    public GuiService(CoreLogger logger, EventBus bus, Platform platform,
+    public GuiService(CoreLogger logger, Platform platform,
                       ModuleRegistry modules, CategoryRegistry categories, ThemeService themes) {
         this.logger = logger;
-        this.bus = bus;
         this.platform = platform;
         this.modules = modules;
         this.categories = categories;
@@ -103,14 +126,11 @@ public final class GuiService implements Service, ConfigSection {
         // registries hold what the windows are made of.
         clickGui = new ClickGuiScreen(categories, modules, renderers);
         clickGui.rebuild();
-
-        bus.subscribe(this);
     }
 
     @Override
     public void stop() {
         close();
-        bus.unsubscribe(this);
     }
 
     // ------------------------------------------------------------- lifecycle
@@ -179,71 +199,74 @@ public final class GuiService implements Service, ConfigSection {
 
     // ----------------------------------------------------------------- input
 
-    @Subscribe(priority = Priority.HIGHEST, ignoreListening = true)
-    private void onMouse(MouseEvent event) {
+    /**
+     * A press.
+     *
+     * <p>Called by the game screen this GUI is hosted in. Core subscribes to
+     * nothing: the screen the client opens already owns the mouse and keyboard
+     * while it is showing, so there is no event to intercept and nothing to
+     * cancel. The HUD editor works the same way.
+     *
+     * @return whether a component consumed it, so the host can decide what to do
+     *         with a press that landed on nothing
+     */
+    public boolean mousePressed(float x, float y, MouseButton button) {
         Screen screen = current;
-        if (screen == null) {
-            return;
-        }
-        if (event.isPressed()) {
-            screen.mousePressed(event.getX(), event.getY(), event.getButton());
-        } else {
-            screen.mouseReleased(event.getX(), event.getY());
-        }
-        event.cancel();
+        return screen != null && screen.mousePressed(x, y, button);
     }
 
-    @Subscribe(priority = Priority.HIGHEST, ignoreListening = true)
-    private void onScroll(ScrollEvent event) {
+    public void mouseReleased(float x, float y) {
         Screen screen = current;
-        if (screen == null) {
-            return;
+        if (screen != null) {
+            screen.mouseReleased(x, y);
         }
-        screen.scrolled(event.getAmount(), event.getX(), event.getY());
-        event.cancel();
+    }
+
+    public boolean scrolled(float amount, float x, float y) {
+        Screen screen = current;
+        return screen != null && screen.scrolled(amount, x, y);
     }
 
     /**
-     * Routes a key to whatever holds focus, and treats Escape as the way out when
-     * nothing does.
+     * A key press, routed to whatever holds focus.
      *
-     * <p>Backing out one level at a time: a text field being edited or a keybind
-     * button waiting for a key consumes Escape for itself, and only an otherwise
-     * idle screen closes on it. The same rule the HUD editor uses, and necessary
-     * for the same reason &mdash; every key is cancelled here, including whatever
-     * one opened the GUI.
+     * <p>Escape is not handled here. A text field being edited consumes it for
+     * itself, and what an otherwise idle screen does with it &mdash; close, or
+     * something else &mdash; is the host's decision, not Core's. Check the return
+     * value and call {@link #close()} if you want the usual behaviour:
+     *
+     * <pre>{@code
+     * if (!Core.gui().keyPressed(key, mods) && key == Key.ESCAPE) {
+     *     Core.gui().close();
+     * }
+     * }</pre>
+     *
+     * @return whether the focused component consumed it
      */
-    @Subscribe(priority = Priority.HIGHEST, ignoreListening = true)
-    private void onKey(KeyEvent event) {
+    public boolean keyPressed(Key key, Set<Modifier> modifiers) {
         Screen screen = current;
-        if (screen == null) {
-            return;
-        }
-        if (event.isPressed()) {
-            boolean handled = screen.keyPressed(event.getKey(), event.getModifiers());
-            if (!handled && event.getKey() == Key.ESCAPE) {
-                close();
-            }
-        }
-        event.cancel();
+        return screen != null && screen.keyPressed(key, modifiers);
     }
 
-    @Subscribe(priority = Priority.HIGHEST, ignoreListening = true)
-    private void onCharTyped(CharTypedEvent event) {
+    public boolean charTyped(char character) {
         Screen screen = current;
-        if (screen == null) {
-            return;
+        return screen != null && screen.charTyped(character);
+    }
+
+    /**
+     * Advances an in-progress drag from the current cursor position.
+     *
+     * <p>Called once a frame before {@link #renderFrame()}, which does it itself,
+     * so a host driving the ordinary way never calls this.
+     */
+    public void updateDrag(float mouseX, float mouseY) {
+        Screen screen = current;
+        if (screen != null) {
+            screen.updateDrag(mouseX, mouseY);
         }
-        screen.charTyped(event.getCharacter());
-        event.cancel();
     }
 
     // ------------------------------------------------------------- rendering
-
-    @Subscribe
-    private void onRender2D(Render2DEvent event) {
-        renderFrame();
-    }
 
     /**
      * Measures, places and draws the open screen.
@@ -298,7 +321,7 @@ public final class GuiService implements Service, ConfigSection {
             return;
         }
 
-        float padding = GuiStyle.PADDING;
+        float padding = GuiStyle.padding();
         float width = Render.textWidth(text) + padding * 2f;
         float height = Render.textHeight() + padding * 2f;
 

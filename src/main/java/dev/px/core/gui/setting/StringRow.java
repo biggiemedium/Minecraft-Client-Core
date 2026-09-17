@@ -1,5 +1,7 @@
 package dev.px.core.gui.setting;
 
+import dev.px.core.layout.Content;
+
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.Screen;
 import dev.px.core.gui.SettingComponent;
@@ -34,16 +36,15 @@ public final class StringRow extends SettingComponent<StringSetting> {
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
+    protected void content(Content c) {
         boolean editing = isFocused();
-        renderRow(x, y, w, editing);
-        renderLabel(x, y);
-
         String value = getSetting().get();
         if (editing && System.currentTimeMillis() % BLINK_MILLIS < BLINK_MILLIS / 2L) {
             value = value + "_";
         }
-        renderValue(value, x, y, w, editing ? GuiStyle.text() : GuiStyle.textMuted());
+        String shown = value;
+        header(c, editing, row ->
+                value(row, shown, editing ? GuiStyle.text() : GuiStyle.textMuted()));
     }
 
     @Override

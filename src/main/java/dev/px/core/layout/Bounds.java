@@ -1,4 +1,4 @@
-package dev.px.core.hud;
+package dev.px.core.layout;
 
 import lombok.EqualsAndHashCode;
 import lombok.Getter;

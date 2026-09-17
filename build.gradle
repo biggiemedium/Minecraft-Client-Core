@@ -20,6 +20,35 @@ repositories {
     mavenCentral()
 }
 
+// LWJGL natives for whatever machine this is being built on.
+ext {
+    lwjglVersion = '3.3.3'
+    lwjglNatives = {
+        String os = System.getProperty('os.name').toLowerCase()
+        String arch = System.getProperty('os.arch').toLowerCase()
+        boolean arm = arch.startsWith('aarch64') || arch.startsWith('arm')
+        if (os.contains('mac')) {
+            return arm ? 'natives-macos-arm64' : 'natives-macos'
+        }
+        if (os.contains('win')) {
+            return 'natives-windows'
+        }
+        return arm ? 'natives-linux-arm64' : 'natives-linux'
+    }()
+}
+
+// A runnable visual harness: a real window, a real renderer, the real HUD.
+tasks.register('visual', JavaExec) {
+    group = 'verification'
+    description = 'Opens a window and renders the HUD with NanoVG.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.px.core.test.visual.VisualTest'
+    // GLFW must own the first thread on macOS, or creating a window aborts.
+    if (System.getProperty('os.name').toLowerCase().contains('mac')) {
+        jvmArgs '-XstartOnFirstThread'
+    }
+}
+
 dependencies {
     // Lombok: compile-time only, nothing lands in the jar.
     compileOnly 'org.projectlombok:lombok:1.18.30'
@@ -35,6 +64,20 @@ dependencies {
     // runs with no Minecraft to supply it, so tests need it for real -- compileOnly
     // above does not reach the test classpaths.
     testImplementation 'com.google.code.gson:gson:2.8.9'
+
+    // ---- visual harness only -------------------------------------------------
+    // LWJGL + NanoVG, so the HUD can be driven by a real renderer in a real
+    // window. Test scope on purpose: Core itself still has no dependencies, and
+    // `compileJava` still proves it.
+    testImplementation platform("org.lwjgl:lwjgl-bom:$lwjglVersion")
+    testImplementation 'org.lwjgl:lwjgl'
+    testImplementation 'org.lwjgl:lwjgl-glfw'
+    testImplementation 'org.lwjgl:lwjgl-opengl'
+    testImplementation 'org.lwjgl:lwjgl-nanovg'
+    testRuntimeOnly "org.lwjgl:lwjgl::$lwjglNatives"
+    testRuntimeOnly "org.lwjgl:lwjgl-glfw::$lwjglNatives"
+    testRuntimeOnly "org.lwjgl:lwjgl-opengl::$lwjglNatives"
+    testRuntimeOnly "org.lwjgl:lwjgl-nanovg::$lwjglNatives"
 }
 
 tasks.withType(JavaCompile) {

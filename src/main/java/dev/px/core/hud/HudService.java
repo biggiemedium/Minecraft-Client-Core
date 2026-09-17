@@ -1,11 +1,12 @@
 package dev.px.core.hud;
 
+import dev.px.core.layout.Bounds;
+import dev.px.core.layout.Content;
+import dev.px.core.layout.Size;
+
 import com.google.gson.JsonObject;
 import dev.px.core.config.ConfigSection;
 import dev.px.core.config.Json;
-import dev.px.core.event.EventBus;
-import dev.px.core.event.Subscribe;
-import dev.px.core.event.impl.Render2DEvent;
 import dev.px.core.math.MathUtil;
 import dev.px.core.platform.Platform;
 import dev.px.core.registry.Registry;
@@ -29,14 +30,28 @@ import java.util.Set;
  * Owns the HUD: which elements exist, where each one sits, and drawing them.
  *
  * <p>The layout engine is entirely here, which is what keeps
- * {@link HudElement} down to two mandatory methods. Each frame it asks every
+ * {@link HudElement} down to two mandatory methods. {@link #resolve} asks every
  * element its natural size, applies the element's scale, resolves the anchor
- * formula, clamps the result to the screen, and draws in z-order. None of that
- * is visible to an element.
+ * formula, clamps the result to the screen, and returns the results in z-order.
+ * None of that is visible to an element.
  *
- * <p>An element that throws is logged once and skipped for that frame rather
- * than being allowed to kill the overlay: one broken HUD element must not take
- * the rest of the HUD with it.
+ * <p><b>Core does not draw the HUD.</b> It resolves geometry and stops. The
+ * client drives its own frame, which is what lets the same layout engine sit
+ * under any look:
+ *
+ * <pre>{@code
+ * // once, at startup
+ * Core.hud().getRenderers().register(HudRenderer.of(ClockElement.class, ClockLook::draw));
+ *
+ * // every frame, from the client's own render hook
+ * List<Placement> placements = Core.hud().resolve(false);
+ * Core.hud().drawAll(placements);
+ * }</pre>
+ *
+ * <p>{@link #drawAll} is a convenience, not a requirement: it applies the scale
+ * transform and contains a throwing element so one broken element cannot take
+ * the rest of the HUD with it. A client that wants full control over the loop
+ * iterates the placements itself and ignores it.
  */
 @Getter
 public final class HudService implements Service, ConfigSection {
@@ -58,7 +73,6 @@ public final class HudService implements Service, ConfigSection {
     private static volatile boolean editingGlobally;
 
     private final CoreLogger logger;
-    private final EventBus bus;
     private final Platform platform;
 
     private final Registry<HudElement> elements = new Registry<HudElement>() {
@@ -73,12 +87,20 @@ public final class HudService implements Service, ConfigSection {
 
     private final HudEditor editor;
 
+    /**
+     * How each element is drawn.
+     *
+     * <p>Empty until the client registers renderers. An element with no renderer
+     * simply is not drawn by {@link #drawAll}, exactly as a setting with no
+     * renderer produces no row.
+     */
+    private final HudRendererRegistry renderers = new HudRendererRegistry();
+
     /** Element ids already reported as broken, so a failure logs once rather than per frame. */
     private final Set<String> warned = new HashSet<>();
 
-    public HudService(CoreLogger logger, EventBus bus, Platform platform) {
+    public HudService(CoreLogger logger, Platform platform) {
         this.logger = logger;
-        this.bus = bus;
         this.platform = platform;
         this.editor = new HudEditor(this, platform);
     }
@@ -93,17 +115,22 @@ public final class HudService implements Service, ConfigSection {
         return "hud";
     }
 
+    /**
+     * Nothing to wire up.
+     *
+     * <p>The HUD subscribes to no events. It used to draw on
+     * {@link dev.px.core.event.impl.Render2DEvent} and the editor used to consume
+     * input at {@link dev.px.core.event.Priority#HIGHEST}; both are the client's
+     * now, because when the HUD is drawn and what input means are decisions Core
+     * has no business making.
+     */
     @Override
     public void start() {
-        bus.subscribe(this);
-        bus.subscribe(editor);
     }
 
     @Override
     public void stop() {
         editor.close();
-        bus.unsubscribe(editor);
-        bus.unsubscribe(this);
     }
 
     static boolean editingGlobally() {
@@ -162,12 +189,13 @@ public final class HudService implements Service, ConfigSection {
             if (layout == null || (layout.isHidden() && !includeHidden)) {
                 continue;
             }
-            Size natural = safeSize(element);
-            if (natural == null) {
+            Content content = safeContent(element);
+            if (content == null) {
                 continue;
             }
+            Size natural = content.size();
             placements.add(new Placement(element, layout, natural,
-                    place(layout, natural, screenWidth, screenHeight)));
+                    place(layout, natural, screenWidth, screenHeight), content));
         }
         // Stable, so equal z-order falls back to the order elements were registered.
         placements.sort(Comparator.comparingInt(placement -> placement.getLayout().getZOrder()));
@@ -212,70 +240,85 @@ public final class HudService implements Service, ConfigSection {
         return null;
     }
 
-    // -------------------------------------------------------------- rendering
+    // -------------------------------------------------------------- drawing
 
     /**
-     * Draws the HUD, then the editor overlay if it is open.
+     * Draws placements through their registered {@link HudRenderer}s.
      *
-     * <p>Subscribed to {@link Render2DEvent}, which is the normal path. An adapter
-     * whose editor screen suppresses that event can call this directly instead,
-     * but must not do both in the same frame.
+     * <p>Optional. Core neither subscribes to a render event nor decides when a
+     * frame happens; the client calls this from its own hook, having resolved the
+     * placements it wants. What it buys over an open-coded loop is the two things
+     * that are easy to get wrong:
+     *
+     * <ul>
+     *   <li><b>The scale transform.</b> An element is drawn at its natural size
+     *       inside a transform about its top-left, which is why a renderer never
+     *       has to account for scale.</li>
+     *   <li><b>Containment.</b> An element whose renderer throws is logged once
+     *       and skipped, rather than being allowed to take the rest of the HUD
+     *       down with it.</li>
+     * </ul>
+     *
+     * <p>An element with no registered renderer is skipped silently, so a client
+     * can register elements before it has written every renderer.
+     *
+     * @param placements what to draw, in the order to draw it
      */
-    public void renderFrame() {
-        boolean editing = editor.isActive();
-        if (editing) {
-            // Apply an in-flight drag before resolving, so the element is drawn
-            // where the cursor is now rather than one frame behind it.
-            editor.beforeResolve();
-        }
-        List<Placement> placements = resolve(editing);
-        if (editing) {
-            editor.renderBackdrop();
-        }
-
+    public void drawAll(List<Placement> placements) {
         for (Placement placement : placements) {
-            // Hidden elements are only reachable here while editing; drawn faint so
-            // they read as hidden while still being selectable to unhide.
-            boolean faint = placement.getLayout().isHidden();
-            if (faint) {
-                Render.pushAlpha(0.35f);
-            }
             try {
                 draw(placement);
             } catch (RuntimeException e) {
                 reportOnce(placement.getId(), "render", e);
-            } finally {
-                if (faint) {
-                    Render.popAlpha();
-                }
             }
         }
-
-        if (editing) {
-            editor.renderOverlay(placements);
-        }
     }
 
-    private void draw(Placement placement) {
+    /** Resolves visible elements and draws them. The whole HUD in one call. */
+    public void drawAll() {
+        drawAll(resolve(editor.isActive()));
+    }
+
+    /**
+     * Draws one placement, scale transform included.
+     *
+     * @return whether a renderer claimed it
+     */
+    public boolean draw(Placement placement) {
         Bounds bounds = placement.getBounds();
-        Size natural = placement.getNatural();
         float scale = placement.getLayout().getScale();
-        HudElement element = placement.getElement();
 
         if (scale == 1f) {
-            element.render(bounds.getX(), bounds.getY(), natural.getWidth(), natural.getHeight());
-        } else {
-            // Scaled about the element's own top-left, so the transform never moves
-            // it away from where the anchor put it.
-            Render.scaled(bounds.getX(), bounds.getY(), scale,
-                    () -> element.render(bounds.getX(), bounds.getY(),
-                            natural.getWidth(), natural.getHeight()));
+            return paint(placement);
         }
+        // Scaled about the element's own top-left, so the transform never moves
+        // it away from where the anchor put it.
+        boolean[] drawn = new boolean[1];
+        Render.scaled(bounds.getX(), bounds.getY(), scale, () -> drawn[0] = paint(placement));
+        return drawn[0];
     }
 
-    @Subscribe
-    private void onRender2D(Render2DEvent event) {
-        renderFrame();
+    /**
+     * Draws one placement: a registered renderer if the element's type has one,
+     * otherwise the content the element described for itself.
+     *
+     * <p>Most elements need no renderer at all &mdash; describing their content
+     * is enough, and that keeps an element to one class. Registering a
+     * {@link HudRenderer} is how a client takes over an element it did not write,
+     * or wants to look different from how its author drew it.
+     */
+    private boolean paint(Placement placement) {
+        if (renderers.render(placement)) {
+            return true;
+        }
+        Content content = placement.getContent();
+        if (content == null) {
+            return false;
+        }
+        Bounds bounds = placement.getBounds();
+        Size natural = placement.getNatural();
+        content.draw(bounds.getX(), bounds.getY(), natural.getWidth(), natural.getHeight());
+        return true;
     }
 
     // ------------------------------------------------------- layout operations
@@ -295,11 +338,11 @@ public final class HudService implements Service, ConfigSection {
         }
         float screenWidth = platform.getScreenWidth();
         float screenHeight = platform.getScreenHeight();
-        Size natural = safeSize(element);
-        if (natural == null) {
+        Content content = safeContent(element);
+        if (content == null) {
             return;
         }
-        Bounds current = place(layout, natural, screenWidth, screenHeight);
+        Bounds current = place(layout, content.size(), screenWidth, screenHeight);
         layout.setAnchor(anchor);
         layout.setOffsetX(anchor.offsetXFor(screenWidth, current.getX(), current.getWidth()));
         layout.setOffsetY(anchor.offsetYFor(screenHeight, current.getY(), current.getHeight()));
@@ -448,12 +491,22 @@ public final class HudService implements Service, ConfigSection {
 
     // ------------------------------------------------------------- internals
 
-    private Size safeSize(HudElement element) {
+    /**
+     * Asks an element to describe itself, and measures the result.
+     *
+     * <p>Once per element per resolve, and the measured box travels on the
+     * {@link Placement} so drawing never repeats the work. An element that throws
+     * while describing itself is skipped for that frame rather than taking the
+     * rest of the HUD with it.
+     */
+    private Content safeContent(HudElement element) {
         try {
-            Size size = element.getPreferredSize();
-            return size == null ? Size.ZERO : size;
+            Content content = Content.column();
+            element.content(content);
+            content.measure();
+            return content;
         } catch (RuntimeException e) {
-            reportOnce(element.getId(), "getPreferredSize", e);
+            reportOnce(element.getId(), "content", e);
             return null;
         }
     }

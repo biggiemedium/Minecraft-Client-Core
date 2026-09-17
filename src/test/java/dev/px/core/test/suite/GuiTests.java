@@ -8,6 +8,7 @@ import dev.px.core.event.impl.KeyEvent;
 import dev.px.core.event.impl.MouseEvent;
 import dev.px.core.gui.Component;
 import dev.px.core.gui.GuiService;
+import dev.px.core.layout.Content;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.Screen;
 import dev.px.core.gui.SettingComponent;
@@ -376,14 +377,14 @@ public final class GuiTests {
         Checks.check("clicking a text field focuses it", label.isFocused());
 
         String original = aura.getLabel().get();
-        client.getCore().getBus().post(new CharTypedEvent('z'));
+        gui.charTyped('z');
         Checks.checkEquals("a typed character reaches the focused field",
                 original + "z", aura.getLabel().get());
 
-        client.getCore().getBus().post(new KeyEvent(Key.BACKSPACE, EnumSet.noneOf(Modifier.class), true));
+        gui.keyPressed(Key.BACKSPACE, EnumSet.noneOf(Modifier.class));
         Checks.checkEquals("and backspace removes one", original, aura.getLabel().get());
 
-        client.getCore().getBus().post(new KeyEvent(Key.ENTER, EnumSet.noneOf(Modifier.class), true));
+        gui.keyPressed(Key.ENTER, EnumSet.noneOf(Modifier.class));
         Checks.check("enter gives up focus", !label.isFocused());
 
         // ---- keybind --------------------------------------------------------
@@ -392,16 +393,17 @@ public final class GuiTests {
         screen.mousePressed(centreX(keybind), headerY(keybind), MouseButton.LEFT);
         Checks.check("clicking a keybind button starts capturing", ((BindRow) keybind).isCapturing());
 
-        client.getCore().getBus().post(new KeyEvent(Key.J, EnumSet.of(Modifier.CTRL), true));
+        gui.keyPressed(Key.J, EnumSet.of(Modifier.CTRL));
         Checks.checkEquals("the next key becomes the bind, modifiers included",
                 Bind.of(Key.J, Modifier.CTRL), aura.getKeybind().get());
         Checks.check("and capturing stops", !((BindRow) keybind).isCapturing());
 
         screen.mousePressed(centreX(keybind), headerY(keybind), MouseButton.LEFT);
-        client.getCore().getBus().post(new KeyEvent(Key.ESCAPE, EnumSet.noneOf(Modifier.class), true));
+        boolean consumed = gui.keyPressed(Key.ESCAPE, EnumSet.noneOf(Modifier.class));
         Checks.checkEquals("escape clears the bind rather than binding escape",
                 Bind.NONE, aura.getKeybind().get());
-        Checks.check("and does not close the GUI, because the row consumed it", gui.isOpen());
+        Checks.check("and reports that it was consumed, so the host does not close the screen",
+                consumed);
     }
 
     // ------------------------------------------------------------ input gate
@@ -410,40 +412,46 @@ public final class GuiTests {
         gui.openClickGui();
         gui.renderFrame();
 
+        // Core no longer listens to the bus for the GUI at all. The game's own
+        // screen owns the mouse and keyboard while it is showing, so there is
+        // nothing to intercept and nothing to cancel.
         MouseEvent mouse = new MouseEvent(MouseButton.LEFT, EnumSet.noneOf(Modifier.class), true, 1f, 1f);
         client.getCore().getBus().post(mouse);
-        Checks.check("a mouse event is cancelled while a screen is open", mouse.isCancelled());
+        Checks.check("an open GUI cancels no mouse event", !mouse.isCancelled());
 
         KeyEvent key = new KeyEvent(Key.Y, EnumSet.noneOf(Modifier.class), true);
         client.getCore().getBus().post(key);
-        Checks.check("so is a key event", key.isCancelled());
+        Checks.check("nor a key event", !key.isCancelled());
 
         CharTypedEvent typed = new CharTypedEvent('q');
         client.getCore().getBus().post(typed);
-        Checks.check("and a typed character", typed.isCancelled());
+        Checks.check("nor a typed character", !typed.isCancelled());
 
-        // The cancellation is what stops a bind firing behind the screen: the input
-        // service listens at LOW and never sees a cancelled event.
-        aura.getKeybind().set(Bind.of(Key.Y));
-        boolean before = aura.isEnabled();
-        client.getCore().getBus().post(new KeyEvent(Key.Y, EnumSet.noneOf(Modifier.class), true));
-        Checks.checkEquals("a module keybind cannot fire behind an open screen",
-                before, aura.isEnabled());
+        // Input arrives by being called, which is what the host screen does.
+        SettingComponent<?> label = rowFor(buttonFor(gui, aura), aura.getLabel());
+        gui.renderFrame();
+        gui.mousePressed(centreX(label), headerY(label), MouseButton.LEFT);
+        Checks.check("a press handed to the service reaches the component", label.isFocused());
 
+        String original = aura.getLabel().get();
+        Checks.check("and so does a character", gui.charTyped('k'));
+        Checks.checkEquals("which the focused field receives",
+                original + "k", aura.getLabel().get());
+        gui.keyPressed(Key.BACKSPACE, EnumSet.noneOf(Modifier.class));
+        gui.keyPressed(Key.ENTER, EnumSet.noneOf(Modifier.class));
+
+        // Escape is reported, not acted on: whether it closes the screen is the
+        // host's decision, and Core does not make it.
+        Checks.check("escape is not consumed by an idle screen",
+                !gui.keyPressed(Key.ESCAPE, EnumSet.noneOf(Modifier.class)));
+        Checks.check("so the screen is still open until the host closes it", gui.isOpen());
         gui.close();
-        client.getCore().getBus().post(new KeyEvent(Key.Y, EnumSet.noneOf(Modifier.class), true));
-        Checks.check("and fires again once it is closed", aura.isEnabled() != before);
-        aura.getKeybind().set(Bind.NONE);
-        aura.setEnabled(before);
+        Checks.check("and closing is an ordinary call", !gui.isOpen());
 
-        MouseEvent afterClose = new MouseEvent(MouseButton.LEFT, EnumSet.noneOf(Modifier.class), true, 1f, 1f);
-        client.getCore().getBus().post(afterClose);
-        Checks.check("a closed GUI cancels nothing", !afterClose.isCancelled());
-
-        // Escape is the way out, since every key including the opening bind is eaten.
-        gui.openClickGui();
-        client.getCore().getBus().post(new KeyEvent(Key.ESCAPE, EnumSet.noneOf(Modifier.class), true));
-        Checks.check("escape closes the screen", !gui.isOpen());
+        Checks.check("input handed to a closed GUI is simply not consumed",
+                !gui.mousePressed(1f, 1f, MouseButton.LEFT)
+                        && !gui.charTyped('x')
+                        && !gui.keyPressed(Key.Y, EnumSet.noneOf(Modifier.class)));
     }
 
     // ----------------------------------------------------------- persistence
@@ -505,11 +513,11 @@ public final class GuiTests {
     }
 
     private static float headerY(Component component) {
-        return component.getBounds().getY() + GuiStyle.ROW_HEIGHT / 2f;
+        return component.getBounds().getY() + GuiStyle.rowHeight() / 2f;
     }
 
     private static float titleY(Component component) {
-        return component.getBounds().getY() + GuiStyle.TITLE_HEIGHT / 2f;
+        return component.getBounds().getY() + GuiStyle.titleHeight() / 2f;
     }
 
     /** Presses at the left of a row, drags to a fraction of its width, and releases. */
@@ -559,10 +567,6 @@ public final class GuiTests {
         public float getPreferredHeight(float width) {
             return getScreenHeight();
         }
-
-        @Override
-        public void render(float x, float y, float w, float h) {
-        }
     }
 
     /** A replacement for Core's slider, to prove a built-in renderer can be swapped. */
@@ -573,9 +577,8 @@ public final class GuiTests {
         }
 
         @Override
-        public void render(float x, float y, float w, float h) {
-            renderRow(x, y, w, false);
-            renderLabel(x, y);
+        protected void content(Content c) {
+            header(c, false);
         }
     }
 
@@ -612,10 +615,8 @@ public final class GuiTests {
         }
 
         @Override
-        public void render(float x, float y, float w, float h) {
-            renderRow(x, y, w, false);
-            renderLabel(x, y);
-            renderValue(getSetting().displayValue(), x, y, w);
+        protected void content(Content c) {
+            header(c, false, row -> value(row, getSetting().displayValue()));
         }
 
         @Override

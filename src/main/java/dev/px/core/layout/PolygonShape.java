@@ -1,4 +1,4 @@
-package dev.px.core.hud;
+package dev.px.core.layout;
 
 import dev.px.core.math.Vec2;
 import dev.px.core.render.Color;

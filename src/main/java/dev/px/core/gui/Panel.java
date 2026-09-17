@@ -1,6 +1,7 @@
 package dev.px.core.gui;
 
-import dev.px.core.hud.Bounds;
+import dev.px.core.layout.Bounds;
+import dev.px.core.layout.Content;
 import dev.px.core.render.Render;
 import lombok.Getter;
 import lombok.Setter;
@@ -35,8 +36,8 @@ import java.util.List;
 @Setter
 public class Panel extends Component {
 
-    private float padding = GuiStyle.PADDING;
-    private float spacing = GuiStyle.SPACING;
+    private float padding = GuiStyle.padding();
+    private float spacing = GuiStyle.spacing();
 
     /** Whether to fill the panel's own rectangle before the children are drawn. */
     private boolean background;
@@ -46,10 +47,13 @@ public class Panel extends Component {
     /**
      * @return space reserved above the children for this component's own drawing
      *
-     * <p>Zero by default: a plain panel is nothing but its children.
+     * <p>Measured from {@link #content}, not declared. A panel that describes a
+     * row-high header reserves exactly that, and a panel that describes nothing
+     * reserves nothing &mdash; so a header can never be a different height from
+     * the thing drawn in it.
      */
-    protected float headerHeight() {
-        return 0f;
+    protected float headerHeight(float width) {
+        return describe(width).size().getHeight();
     }
 
     /** @return how far to shift children right of the panel's content edge. */
@@ -66,6 +70,12 @@ public class Panel extends Component {
 
     @Override
     public void layout(float x, float y, float width) {
+        // The header is this panel's own content, placed at the panel's corner;
+        // the children stack underneath whatever it measured.
+        Content header = describe(width);
+        float headerHeight = header.size().getHeight();
+        placeContent(header, x, y, width, headerHeight);
+
         setBounds(Bounds.of(x, y, width, stack(x, y, width, true)));
     }
 
@@ -80,7 +90,7 @@ public class Panel extends Component {
      * @return the total height the stack occupies
      */
     private float stack(float x, float y, float width, boolean place) {
-        float header = headerHeight();
+        float header = headerHeight(width);
         List<Component> visible = visibleChildren();
         if (visible.isEmpty()) {
             return header > 0f ? header : padding * 2f;
@@ -108,8 +118,15 @@ public class Panel extends Component {
 
     // --------------------------------------------------------------- drawing
 
+    /**
+     * Fills the whole panel, children included.
+     *
+     * <p>A backdrop rather than content, because it has to span a height that is
+     * only known once the children are placed &mdash; which is after content has
+     * been measured.
+     */
     @Override
-    public void render(float x, float y, float w, float h) {
+    protected void renderBackdrop(float x, float y, float w, float h) {
         if (background) {
             Render.roundRect(x, y, w, h, GuiStyle.radius(w, h), GuiStyle.background());
         }

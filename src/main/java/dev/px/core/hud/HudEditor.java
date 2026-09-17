@@ -1,63 +1,73 @@
 package dev.px.core.hud;
 
-import dev.px.core.event.Priority;
-import dev.px.core.event.Subscribe;
-import dev.px.core.event.impl.KeyEvent;
-import dev.px.core.event.impl.MouseEvent;
-import dev.px.core.event.impl.ScrollEvent;
-import dev.px.core.input.Modifier;
-import dev.px.core.input.MouseButton;
+import dev.px.core.layout.Bounds;
+import dev.px.core.layout.Size;
+
 import dev.px.core.math.MathUtil;
 import dev.px.core.platform.Platform;
-import dev.px.core.render.Color;
-import dev.px.core.render.Render;
 import lombok.Getter;
-import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
-import java.util.function.Supplier;
+import java.util.Map;
 
 /**
- * Edit mode: select, drag, scale, lock, hide and reorder HUD elements.
+ * The interaction model behind edit mode: what is selected, what is being
+ * dragged, where it would land, and what it is snapped to.
  *
- * <p>Input arrives through Core's ordinary {@link MouseEvent}, {@link KeyEvent}
- * and {@link ScrollEvent} at {@link Priority#HIGHEST}, and every one of them is
- * cancelled while the editor is open. That cancellation <em>is</em> the
- * "swallows input" requirement: with the events consumed before anything else
- * sees them, no module toggles and no gameplay action can fire behind the editor.
+ * <p><b>This class draws nothing and listens to nothing.</b> It is the HUD's
+ * arithmetic for editing &mdash; hit testing, drag offsets, uniform resize about
+ * a fixed corner, edge and centre snapping, handle placement &mdash; exposed as
+ * plain state and as a per-frame {@link HudEditorView}. What edit mode
+ * <em>looks</em> like, and which key or button does what, belong to the client
+ * built on Core, not to Core.
  *
- * <p>Selection outlines are drawn by asking the element's own {@link Shape} to
- * {@link Shape#stroke}. Nothing here switches on shape type, so a circular or
- * polygonal element gets a correct outline and correct hit testing on the day it
- * is written.
+ * <p>A consumer drives it with three calls a frame:
  *
- * <p>Dragging follows the mouse from {@link Platform#getMouseX()} each frame
- * rather than from a move event, because Core has no mouse-move event and does
- * not need one: the drag is only interesting while something is being drawn.
+ * <pre>{@code
+ * editor.update(mouseX, mouseY);          // apply any in-flight drag or resize
+ * HudEditorView view = editor.view();     // geometry to draw
+ * hud.drawAll(view.getPlacements());      // draw the elements themselves
+ * }</pre>
+ *
+ * <p>and routes its own input into the action methods:
+ *
+ * <pre>{@code
+ * // in the consumer's screen
+ * public void mousePressed(float x, float y, MouseButton button) {
+ *     if (button == MouseButton.LEFT) {
+ *         editor.press(x, y);
+ *     } else if (button == MouseButton.RIGHT && editor.getSelected() != null) {
+ *         editor.toggleHiddenSelected();
+ *     }
+ * }
+ * public void mouseReleased() { editor.release(); }
+ * public void keyPressed(Key key) {
+ *     if (key == Key.L) editor.toggleLockSelected();
+ *     if (key == Key.LEFT) editor.nudgeSelected(-1f, 0f);
+ * }
+ * }</pre>
+ *
+ * <p>Nothing here reads the cursor or cancels an event on its own. Core has no
+ * opinion on whether ALT is the snap-suspend key or whether Escape closes the
+ * editor, so {@link #setSnappingSuspended} and {@link #close} are called by
+ * whoever owns those bindings.
+ *
+ * <p>Geometry is refreshed by {@link #update}, and resolved on demand by
+ * anything that needs it before the first update. Hit testing therefore never
+ * depends on a frame having been drawn &mdash; which it used to, when the
+ * overlay renderer was what recorded the placements.
  */
 @Getter
 public final class HudEditor {
 
+    /** How close to a guide line a dragged edge has to be before it snaps. */
     private static final float SNAP_DISTANCE = 6f;
-    private static final float HANDLE_SIZE = 6f;
-
-    /** Handles sit outside the element so clicking one never overlaps its own shape. */
-    private static final float HANDLE_GAP = 3f;
-
-    private static final Color BACKDROP = Color.of(0, 0, 0, 110);
-    private static final Color HOVER = Color.of(255, 255, 255, 90);
-    private static final Color LOCKED = Color.of(255, 150, 60, 200);
-    private static final Color GUIDE = Color.of(120, 220, 255, 180);
-    private static final Color LABEL = Color.of(235, 235, 240, 220);
 
     private final HudService hud;
     private final Platform platform;
-
-    /** Accent used for the selection outline. Pointed at the active theme by Core at startup. */
-    @Setter
-    private Supplier<Color> accent = () -> Color.of(120, 200, 255);
 
     private boolean active;
     private String selectedId;
@@ -69,13 +79,34 @@ public final class HudEditor {
     private float grabX;
     private float grabY;
 
-    /** Held modifiers, tracked across events so a key pressed mid-drag is noticed. */
-    private boolean suspendSnapping;
+    /** Cursor as last given to {@link #update} or {@link #press}. Core never reads it from anywhere else. */
+    private float cursorX;
+    private float cursorY;
 
-    /** Last frame's geometry, so drag maths has something to work against before the next resolve. */
-    private List<Placement> lastPlacements = Collections.emptyList();
+    /**
+     * Whether snapping is currently turned off.
+     *
+     * <p>Set by the consumer from whatever modifier it uses. Core does not track
+     * a key, because which key suspends snapping is a UX decision.
+     */
+    private boolean snappingSuspended;
 
-    private final List<Guide> guides = new ArrayList<>(4);
+    /**
+     * Size of a corner resize handle.
+     *
+     * <p>Settable because the handle rectangle is both what the consumer draws
+     * and what {@link #press} hit tests. A consumer that draws a bigger grab
+     * target sets it here and the two stay in agreement.
+     */
+    private float handleSize = 6f;
+
+    /** Gap between the element and its handles, so grabbing one never overlaps the element. */
+    private float handleGap = 3f;
+
+    /** Geometry as of the last {@link #update}, so a drag has something to work against. */
+    private List<Placement> placements = Collections.emptyList();
+
+    private final List<SnapGuide> guides = new ArrayList<>(2);
 
     HudEditor(HudService hud, Platform platform) {
         this.hud = hud;
@@ -88,16 +119,11 @@ public final class HudEditor {
         if (!active) {
             active = true;
             hud.setEditingFlag(true);
+            refresh();
         }
     }
 
-    /**
-     * Leaves edit mode and drops all transient state.
-     *
-     * <p>Note that while the editor is open it cancels <em>every</em> key, which
-     * includes whatever bind opened it. {@code ESCAPE} is therefore the way out:
-     * it clears the selection if there is one, and closes the editor otherwise.
-     */
+    /** Leaves edit mode and drops all transient state. */
     public void close() {
         if (active) {
             active = false;
@@ -107,7 +133,7 @@ public final class HudEditor {
             guides.clear();
             // Placements hold last frame's geometry; keeping them past close would
             // let a stale hit test answer the first click of the next session.
-            lastPlacements = Collections.emptyList();
+            placements = Collections.emptyList();
             hud.setEditingFlag(false);
         }
     }
@@ -118,6 +144,18 @@ public final class HudEditor {
         } else {
             open();
         }
+    }
+
+    public void setSnappingSuspended(boolean suspended) {
+        this.snappingSuspended = suspended;
+    }
+
+    public void setHandleSize(float size) {
+        this.handleSize = Math.max(1f, size);
+    }
+
+    public void setHandleGap(float gap) {
+        this.handleGap = Math.max(0f, gap);
     }
 
     // ------------------------------------------------------------- selection
@@ -141,20 +179,30 @@ public final class HudEditor {
         return placementFor(selectedId);
     }
 
+    /** @return the element under the cursor as last reported, or null. */
+    public Placement getHovered() {
+        return hud.hitTest(currentPlacements(), cursorX, cursorY);
+    }
+
     /**
-     * Finds a placement by id, preferring last frame's geometry.
+     * Finds a placement by id, preferring the geometry from the last update.
      *
      * <p>Falls back to a fresh resolve when it is not there. Without that, every
      * operation needing geometry &mdash; nudging, resizing, reading the selection
-     * &mdash; would silently do nothing until a frame had been drawn, which is a
-     * trap for a GUI driving the editor from a button rather than the mouse.
+     * &mdash; would silently do nothing until {@link #update} had been called,
+     * which is a trap for a GUI driving the editor from a button rather than the
+     * cursor.
      */
     private Placement placementFor(String id) {
-        if (id == null) {
-            return null;
+        return id == null ? null : findIn(currentPlacements(), id);
+    }
+
+    /** @return the cached geometry, resolving once if nothing has been cached yet. */
+    private List<Placement> currentPlacements() {
+        if (placements.isEmpty()) {
+            placements = hud.resolve(true);
         }
-        Placement cached = findIn(lastPlacements, id);
-        return cached != null ? cached : findIn(hud.resolve(true), id);
+        return placements;
     }
 
     private static Placement findIn(List<Placement> placements, String id) {
@@ -164,22 +212,6 @@ public final class HudEditor {
             }
         }
         return null;
-    }
-
-    /**
-     * Keeps the snap-suspend flag in step with the ALT key.
-     *
-     * <p>Reading it from the event's modifier set alone is not enough: adapters
-     * disagree on whether a modifier key's own press event lists itself, so ALT
-     * could get stuck on after release. The key itself is authoritative when it
-     * is the one that moved.
-     */
-    private void trackSnapModifier(KeyEvent event) {
-        if (Modifier.of(event.getKey()) == Modifier.ALT) {
-            suspendSnapping = event.isPressed();
-        } else {
-            suspendSnapping = event.getModifiers().contains(Modifier.ALT);
-        }
     }
 
     private HudLayout selectedLayout() {
@@ -195,7 +227,7 @@ public final class HudEditor {
         }
     }
 
-    /** Hiding keeps the selection: the element stays visible in the editor to be unhidden. */
+    /** Hiding keeps the selection: the element stays selectable in the editor to be unhidden. */
     public void toggleHiddenSelected() {
         HudLayout layout = selectedLayout();
         if (layout != null) {
@@ -241,138 +273,103 @@ public final class HudEditor {
             return;
         }
         hud.moveTo(placement, placement.getBounds().getX() + dx, placement.getBounds().getY() + dy);
+        refresh();
     }
 
     // ------------------------------------------------------------------ input
 
-    @Subscribe(priority = Priority.HIGHEST, ignoreListening = true)
-    private void onMouse(MouseEvent event) {
+    /**
+     * Begins an interaction at a point: grabs a resize handle, selects and starts
+     * dragging an element, or clears the selection on empty space.
+     *
+     * @return whether anything was hit
+     */
+    public boolean press(float x, float y) {
         if (!active) {
-            return;
+            return false;
         }
-        suspendSnapping = event.getModifiers().contains(Modifier.ALT);
+        this.cursorX = x;
+        this.cursorY = y;
 
-        if (event.isPressed()) {
-            if (event.getButton() == MouseButton.LEFT) {
-                pressLeft(event.getX(), event.getY());
-            } else if (event.getButton() == MouseButton.RIGHT) {
-                // Right-click toggles visibility, the quickest way to switch an element off.
-                Placement hit = hud.hitTest(lastPlacements, event.getX(), event.getY());
-                if (hit != null && !hit.getLayout().isLocked()) {
-                    hit.getLayout().toggleHidden();
-                }
-            }
-        } else {
-            dragging = false;
-            resizing = null;
-            guides.clear();
-        }
-        event.cancel();
-    }
-
-    private void pressLeft(float mouseX, float mouseY) {
         // A grabbed handle wins over a new selection, otherwise clicking a handle
         // that overlaps another element would select that element instead.
         Placement selected = getSelected();
         if (selected != null && !selected.getLayout().isLocked()) {
-            Handle handle = handleAt(selected, mouseX, mouseY);
+            Handle handle = handleAt(selected, x, y);
             if (handle != null) {
                 resizing = handle;
                 dragging = false;
-                return;
+                return true;
             }
         }
 
-        Placement hit = hud.hitTest(lastPlacements, mouseX, mouseY);
+        Placement hit = hud.hitTest(currentPlacements(), x, y);
         if (hit == null) {
             deselect();
-            return;
+            return false;
         }
         selectedId = hit.getId();
         if (hit.getLayout().isLocked()) {
             // Selectable so it can be unlocked, but not draggable.
             dragging = false;
-            return;
+            return true;
         }
         dragging = true;
-        grabX = mouseX - hit.getBounds().getX();
-        grabY = mouseY - hit.getBounds().getY();
+        grabX = x - hit.getBounds().getX();
+        grabY = y - hit.getBounds().getY();
+        return true;
     }
 
-    @Subscribe(priority = Priority.HIGHEST, ignoreListening = true)
-    private void onScroll(ScrollEvent event) {
-        if (!active) {
-            return;
-        }
-        scaleSelected(event.getAmount() > 0f ? 0.05f : -0.05f);
-        event.cancel();
+    /** Ends any drag or resize. The selection survives. */
+    public void release() {
+        dragging = false;
+        resizing = null;
+        guides.clear();
     }
-
-    @Subscribe(priority = Priority.HIGHEST, ignoreListening = true)
-    private void onKey(KeyEvent event) {
-        if (!active) {
-            return;
-        }
-        trackSnapModifier(event);
-        if (!event.isPressed()) {
-            event.cancel();
-            return;
-        }
-
-        boolean fine = event.getModifiers().contains(Modifier.SHIFT);
-        float step = fine ? 10f : 1f;
-
-        switch (event.getKey()) {
-            case ESCAPE:
-                // Escape backs out one level: clear the selection, or leave the editor.
-                if (selectedId != null) {
-                    deselect();
-                } else {
-                    close();
-                }
-                break;
-            case LEFT: nudgeSelected(-step, 0f); break;
-            case RIGHT: nudgeSelected(step, 0f); break;
-            case UP: nudgeSelected(0f, -step); break;
-            case DOWN: nudgeSelected(0f, step); break;
-            case L: toggleLockSelected(); break;
-            case H: toggleHiddenSelected(); break;
-            case R: resetSelected(); break;
-            case PAGE_UP: bringSelectedToFront(); break;
-            case PAGE_DOWN: sendSelectedToBack(); break;
-            default: break;
-        }
-        event.cancel();
-    }
-
-    // ----------------------------------------------------------------- update
 
     /**
-     * Applies an in-progress drag or resize from the current cursor position.
+     * Applies an in-progress drag or resize from the given cursor position, then
+     * refreshes the cached geometry.
      *
-     * <p>Called by {@link HudService#renderFrame()} before geometry is resolved,
-     * so the element is drawn at the position the mouse is at this frame rather
-     * than one frame behind.
+     * <p>Called once a frame by the consumer, before it reads {@link #view()},
+     * so the element is positioned where the cursor is this frame rather than one
+     * frame behind. Safe to call when nothing is being dragged: it just refreshes.
+     *
+     * <p>Core does not read the cursor itself. Passing it in is what lets a drag
+     * be driven by a test, a controller or anything else that is not a mouse.
      */
-    void beforeResolve() {
-        guides.clear();
-        Placement placement = getSelected();
-        if (placement == null || placement.getLayout().isLocked()) {
+    public void update(float mouseX, float mouseY) {
+        if (!active) {
             return;
         }
-        if (dragging) {
-            applyDrag(placement);
-        } else if (resizing != null) {
-            applyResize(placement);
+        this.cursorX = mouseX;
+        this.cursorY = mouseY;
+        guides.clear();
+
+        Placement placement = getSelected();
+        if (placement != null && !placement.getLayout().isLocked()) {
+            if (dragging) {
+                applyDrag(placement);
+            } else if (resizing != null) {
+                applyResize(placement);
+            }
+        }
+        refresh();
+    }
+
+    /** Re-resolves geometry, so hit testing and the next view see current positions. */
+    private void refresh() {
+        if (active) {
+            placements = hud.resolve(true);
         }
     }
 
     private void applyDrag(Placement placement) {
-        float targetX = platform.getMouseX() - grabX;
-        float targetY = platform.getMouseY() - grabY;
+        float targetX = cursorX - grabX;
+        float targetY = cursorY - grabY;
 
         Bounds bounds = placement.getBounds();
-        if (!suspendSnapping) {
+        if (!snappingSuspended) {
             targetX = snapAxis(targetX, bounds.getWidth(), platform.getScreenWidth(), true);
             targetY = snapAxis(targetY, bounds.getHeight(), platform.getScreenHeight(), false);
         }
@@ -387,13 +384,13 @@ public final class HudEditor {
         }
 
         // The corner opposite the grabbed handle stays put, which is what makes
-        // dragging any of the four corners feel right even though rendering always
+        // dragging any of the four corners feel right even though drawing always
         // scales about the top-left.
         float fixedX = resizing.left ? bounds.getRight() : bounds.getX();
         float fixedY = resizing.top ? bounds.getBottom() : bounds.getY();
 
-        float wantedWidth = Math.abs(platform.getMouseX() - fixedX);
-        float wantedHeight = Math.abs(platform.getMouseY() - fixedY);
+        float wantedWidth = Math.abs(cursorX - fixedX);
+        float wantedHeight = Math.abs(cursorY - fixedY);
 
         // Uniform: an element sizes itself from its content, so only scale is free.
         float scale = MathUtil.clamp(
@@ -416,7 +413,7 @@ public final class HudEditor {
      *
      * @return the adjusted position, recording a guide when it snapped
      */
-    private float snapAxis(float position, float size, float screenSize, boolean horizontal) {
+    private float snapAxis(float position, float size, float screenSize, boolean horizontalAxis) {
         float[] elementLines = { position, position + size / 2f, position + size };
         float[] screenLines = { 0f, screenSize / 2f, screenSize };
 
@@ -437,76 +434,51 @@ public final class HudEditor {
             }
         }
         if (snapped) {
-            guides.add(new Guide(bestLine, horizontal));
+            // A snap on the horizontal axis constrains x, and so draws as a vertical line.
+            guides.add(new SnapGuide(bestLine, horizontalAxis));
             return position + bestDelta;
         }
         return position;
     }
 
-    // -------------------------------------------------------------- rendering
+    // ------------------------------------------------------------------- view
 
-    /** Dims the game behind the HUD so the editor reads as a separate mode. */
-    void renderBackdrop() {
-        Render.rect(0f, 0f, platform.getScreenWidth(), platform.getScreenHeight(), BACKDROP);
+    /**
+     * @return an immutable snapshot of everything an edit-mode UI needs to draw
+     *
+     * <p>Cheap enough to call once a frame and never cached, for the same reason
+     * nothing else in the HUD is cached: an element's size can change between any
+     * two frames.
+     */
+    public HudEditorView view() {
+        if (!active) {
+            return new HudEditorView(false, Collections.<Placement>emptyList(), null, null,
+                    Collections.<Handle, Bounds>emptyMap(), Collections.<SnapGuide>emptyList(),
+                    false, false);
+        }
+        List<Placement> resolved = currentPlacements();
+        Placement selected = findIn(resolved, selectedId);
+        Placement hovered = hud.hitTest(resolved, cursorX, cursorY);
+
+        Map<Handle, Bounds> handleBounds = selected == null || selected.getLayout().isLocked()
+                ? Collections.<Handle, Bounds>emptyMap()
+                : handlesOf(selected);
+
+        return new HudEditorView(true, new ArrayList<>(resolved), selected, hovered,
+                handleBounds, new ArrayList<>(guides), dragging, resizing != null);
     }
 
-    /** Draws outlines, handles and guides on top of the elements. */
-    void renderOverlay(List<Placement> placements) {
-        this.lastPlacements = placements;
-
-        float mouseX = platform.getMouseX();
-        float mouseY = platform.getMouseY();
-        Placement hovered = hud.hitTest(placements, mouseX, mouseY);
-
-        for (Placement placement : placements) {
-            boolean isSelected = placement.getId().equals(selectedId);
-            if (!isSelected && placement != hovered) {
-                continue;
-            }
-            Color outline = placement.getLayout().isLocked() ? LOCKED
-                    : isSelected ? accent.get() : HOVER;
-            placement.shape().stroke(isSelected ? 1.5f : 1f, outline);
+    /** @return the four corner handle rectangles for a placement, in enum order. */
+    public Map<Handle, Bounds> handlesOf(Placement placement) {
+        Map<Handle, Bounds> found = new EnumMap<>(Handle.class);
+        if (placement == null) {
+            return found;
         }
-
-        Placement selected = placementFor(selectedId);
-        if (selected != null) {
-            if (!selected.getLayout().isLocked()) {
-                renderHandles(selected);
-            }
-            renderLabel(selected);
-        }
-
-        for (Guide guide : guides) {
-            if (guide.horizontal) {
-                Render.line(guide.position, 0f, guide.position, platform.getScreenHeight(), 1f, GUIDE);
-            } else {
-                Render.line(0f, guide.position, platform.getScreenWidth(), guide.position, 1f, GUIDE);
-            }
-        }
-    }
-
-    private void renderHandles(Placement placement) {
         Bounds bounds = placement.shape().bounds();
         for (Handle handle : Handle.values()) {
-            Bounds box = handleBounds(bounds, handle);
-            Render.rect(box.getX(), box.getY(), box.getWidth(), box.getHeight(), accent.get());
+            found.put(handle, handleBounds(bounds, handle));
         }
-    }
-
-    private void renderLabel(Placement placement) {
-        Bounds bounds = placement.shape().bounds();
-        HudLayout layout = placement.getLayout();
-        String text = placement.getElement().getDisplayName()
-                + "  " + layout.getAnchor().name().toLowerCase()
-                + "  x" + String.format("%.2f", layout.getScale())
-                + (layout.isLocked() ? "  locked" : "")
-                + (layout.isHidden() ? "  hidden" : "");
-        // Below the element, unless that would fall off the bottom of the screen.
-        float y = bounds.getBottom() + HANDLE_GAP + HANDLE_SIZE;
-        if (y + 10f > platform.getScreenHeight()) {
-            y = bounds.getY() - HANDLE_GAP - HANDLE_SIZE - 10f;
-        }
-        Render.text(text, bounds.getX(), y, LABEL);
+        return found;
     }
 
     private Handle handleAt(Placement placement, float x, float y) {
@@ -529,19 +501,19 @@ public final class HudEditor {
      * When there is no room outside, the handle flips to the inside edge instead.
      */
     private Bounds handleBounds(Bounds bounds, Handle handle) {
-        float outsideX = handle.left ? bounds.getX() - HANDLE_GAP - HANDLE_SIZE : bounds.getRight() + HANDLE_GAP;
-        float outsideY = handle.top ? bounds.getY() - HANDLE_GAP - HANDLE_SIZE : bounds.getBottom() + HANDLE_GAP;
+        float outsideX = handle.left ? bounds.getX() - handleGap - handleSize : bounds.getRight() + handleGap;
+        float outsideY = handle.top ? bounds.getY() - handleGap - handleSize : bounds.getBottom() + handleGap;
 
         float x = onScreen(outsideX, platform.getScreenWidth()) ? outsideX
-                : handle.left ? bounds.getX() + HANDLE_GAP : bounds.getRight() - HANDLE_GAP - HANDLE_SIZE;
+                : handle.left ? bounds.getX() + handleGap : bounds.getRight() - handleGap - handleSize;
         float y = onScreen(outsideY, platform.getScreenHeight()) ? outsideY
-                : handle.top ? bounds.getY() + HANDLE_GAP : bounds.getBottom() - HANDLE_GAP - HANDLE_SIZE;
+                : handle.top ? bounds.getY() + handleGap : bounds.getBottom() - handleGap - handleSize;
 
-        return Bounds.of(x, y, HANDLE_SIZE, HANDLE_SIZE);
+        return Bounds.of(x, y, handleSize, handleSize);
     }
 
-    private static boolean onScreen(float position, float screenSize) {
-        return position >= 0f && position + HANDLE_SIZE <= screenSize;
+    private boolean onScreen(float position, float screenSize) {
+        return position >= 0f && position + handleSize <= screenSize;
     }
 
     /** A corner grab point. Scaling keeps the opposite corner fixed. */
@@ -559,17 +531,13 @@ public final class HudEditor {
             this.left = left;
             this.top = top;
         }
-    }
 
-    /** An alignment line drawn while an element is snapped to it. */
-    private static final class Guide {
+        public boolean isLeft() {
+            return left;
+        }
 
-        final float position;
-        final boolean horizontal;
-
-        Guide(float position, boolean horizontal) {
-            this.position = position;
-            this.horizontal = horizontal;
+        public boolean isTop() {
+            return top;
         }
     }
 }

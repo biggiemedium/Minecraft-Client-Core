@@ -1,7 +1,7 @@
 package dev.px.core.gui;
 
 import com.google.gson.JsonObject;
-import dev.px.core.hud.Bounds;
+import dev.px.core.layout.Bounds;
 import dev.px.core.input.Key;
 import dev.px.core.input.Modifier;
 import dev.px.core.input.MouseButton;
@@ -98,16 +98,13 @@ public abstract class Screen extends Component {
      */
     @Override
     public void layout(float x, float y, float width) {
+        placeContent(describe(screenWidth), 0f, 0f, screenWidth, screenHeight);
         setBounds(Bounds.of(0f, 0f, screenWidth, screenHeight));
         layoutChildren();
     }
 
     /** Places this screen's children. Called once per frame, after {@link #resize}. */
     protected void layoutChildren() {
-    }
-
-    @Override
-    public void render(float x, float y, float w, float h) {
     }
 
     // ----------------------------------------------------------------- focus

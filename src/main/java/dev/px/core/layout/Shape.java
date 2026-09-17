@@ -1,6 +1,8 @@
-package dev.px.core.hud;
+package dev.px.core.layout;
 
 import dev.px.core.math.Vec2;
+
+import java.util.List;
 import dev.px.core.render.Color;
 
 /**
@@ -73,5 +75,19 @@ public interface Shape {
      */
     static Shape polygon(Vec2... points) {
         return new PolygonShape(points);
+    }
+
+    /**
+     * Several shapes as one region, outlined by their combined silhouette.
+     *
+     * <p>What an element made of separate panels occupies &mdash; an ArrayList of
+     * per-module rows, a set of gauges. A single shape is returned as itself
+     * rather than wrapped, so the common case keeps its exact outline.
+     */
+    static Shape union(List<Shape> parts) {
+        if (parts.size() == 1) {
+            return parts.get(0);
+        }
+        return new UnionShape(parts.toArray(new Shape[0]));
     }
 }

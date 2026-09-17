@@ -1,5 +1,9 @@
 package dev.px.core.gui.setting;
 
+import dev.px.core.layout.Align;
+
+import dev.px.core.layout.Content;
+
 import dev.px.core.gui.Component;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.SettingComponent;
@@ -34,15 +38,15 @@ public final class EnumRow extends SettingComponent<EnumSetting<?>> {
 
     @Override
     protected float childIndent() {
-        return GuiStyle.INDENT;
+        return GuiStyle.indent();
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
-        renderRow(x, y, w, open);
-        renderLabel(x, y);
-        renderValue(getSetting().displayValue(), x, y, w - 8f);
-        renderCaret(x + w - GuiStyle.PADDING - 3f, y, open);
+    protected void content(Content c) {
+        header(c, open, row -> {
+            value(row, getSetting().displayValue());
+            caret(row, open);
+        });
     }
 
     @Override
@@ -99,19 +103,14 @@ public final class EnumRow extends SettingComponent<EnumSetting<?>> {
         }
 
         @Override
-        public float getPreferredHeight(float width) {
-            return GuiStyle.ROW_HEIGHT;
-        }
-
-        @Override
-        public void render(float x, float y, float w, float h) {
+        protected void content(Content c) {
             boolean selected = owner.isSelected(option);
+            float height = GuiStyle.rowHeight();
+            c.height(height).padding(GuiStyle.padding(), 0f).align(Align.CENTER);
             if (selected) {
-                Render.roundRect(x, y, w, h, GuiStyle.radius(w, h), GuiStyle.accent().withAlpha(90));
+                c.background(GuiStyle.accent().withAlpha(90), Math.min(GuiStyle.radius(), height / 2f));
             }
-            Render.text(owner.labelOf(option), x + GuiStyle.PADDING,
-                    y + (h - Render.textHeight()) / 2f,
-                    selected ? GuiStyle.text() : GuiStyle.textMuted());
+            c.text(owner.labelOf(option), selected ? GuiStyle.text() : GuiStyle.textMuted());
         }
 
         @Override

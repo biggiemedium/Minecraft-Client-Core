@@ -1,5 +1,7 @@
 package dev.px.core.gui.setting;
 
+import dev.px.core.layout.Content;
+
 import dev.px.core.gui.Component;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.SettingComponent;
@@ -36,16 +38,16 @@ public final class GroupRow extends SettingComponent<GroupSetting> {
 
     @Override
     protected float childIndent() {
-        return GuiStyle.INDENT;
+        return GuiStyle.indent();
     }
 
     @Override
-    public void render(float x, float y, float w, float h) {
+    protected void content(Content c) {
         boolean expanded = getSetting().isExpanded();
-        renderRow(x, y, w, expanded);
-        renderLabel(x, y);
-        renderValue(getSetting().displayValue(), x, y, w - 8f);
-        renderCaret(x + w - GuiStyle.PADDING - 3f, y, expanded);
+        header(c, expanded, row -> {
+            value(row, getSetting().displayValue());
+            caret(row, expanded);
+        });
     }
 
     @Override
