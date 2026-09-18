@@ -47,6 +47,24 @@ public final class Checks {
         report(description, passed, String.valueOf(expected), String.valueOf(actual));
     }
 
+    /**
+     * Asserts a value is within {@code tolerancePercent} of the expected one, and
+     * reports how far off it actually was either way.
+     *
+     * <p>For figures that come from <em>outside</em> the code under test &mdash; a
+     * published measurement, a constant someone else determined. An exact match
+     * would be asserting the model against itself, and the fixed epsilon above is
+     * the wrong shape when the quantity can be any magnitude. Printing the error
+     * on success as well as failure means the log records how close the model
+     * really is, rather than only that it was inside the band.
+     */
+    public static void checkEquals(String description, float expected, float actual,
+                                   float tolerancePercent) {
+        float off = expected == 0f ? actual : (actual - expected) / expected * 100f;
+        boolean passed = Math.abs(actual - expected) <= Math.abs(expected) * tolerancePercent / 100f;
+        check(description + String.format("  (%.4f vs %.4f, %+.2f%%)", actual, expected, off), passed);
+    }
+
     public static void checkEquals(String description, Object expected, Object actual) {
         boolean passed = expected == null ? actual == null : expected.equals(actual);
         report(description, passed, String.valueOf(expected), String.valueOf(actual));

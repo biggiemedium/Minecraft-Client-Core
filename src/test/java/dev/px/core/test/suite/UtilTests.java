@@ -15,6 +15,7 @@ import dev.px.core.util.collect.Trie;
 import dev.px.core.util.collect.Triplet;
 import dev.px.core.util.collect.WeightedList;
 import dev.px.core.util.math.MovementMath;
+import dev.px.core.util.math.PhysicsProfile;
 import dev.px.core.util.math.RotationMath;
 import dev.px.core.util.net.Http;
 import dev.px.core.util.render.ColorUtil;
@@ -279,7 +280,7 @@ public final class UtilTests {
     private static void movement() {
         Checks.section("Util: movement maths");
 
-        double speed = MovementMath.WALK_SPEED;
+        double speed = MovementMath.getProfile().getWalkSpeed();
 
         Vec3 forward = MovementMath.velocity(0f, 1d, 0d, speed);
         Checks.checkEquals("walking forward at yaw 0 moves along +Z", (float) speed,
@@ -326,6 +327,36 @@ public final class UtilTests {
         Vec3 predicted = MovementMath.predict(Vec3.ZERO, Vec3.of(0.2d, 0d, 0d), 5);
         Checks.checkEquals("prediction carries horizontal motion", 1f, (float) predicted.getX());
         Checks.check("and drops vertically", predicted.getY() < 0d);
+
+        // ---- the constants are a profile, not a law ------------------------
+        // They used to be public static final on MovementMath, which quietly gave
+        // a client on any version 1.8's numbers with no way to say otherwise.
+        PhysicsProfile vanilla = PhysicsProfile.vanilla();
+        Checks.check("vanilla is shared rather than rebuilt", vanilla == PhysicsProfile.vanilla());
+
+        PhysicsProfile lunar = vanilla.withGravity(0.05d);
+        Checks.checkEquals("a profile copy takes the new value", 0.05f, (float) lunar.getGravity());
+        Checks.checkEquals("and leaves the original alone", 0.08f, (float) vanilla.getGravity());
+        Checks.check("falling is slower under it",
+                MovementMath.fall(lunar, 0d) > MovementMath.fall(vanilla, 0d));
+
+        PhysicsProfile ice = vanilla.withGroundFriction(0.98d);
+        Checks.check("an explicit profile beats the default",
+                MovementMath.friction(ice, 1d, 1d) > MovementMath.friction(1d, 1d));
+
+        Checks.checkThrows("a friction above 1 is a typo, not a fast player",
+                IllegalArgumentException.class, () -> PhysicsProfile.vanilla().withGroundFriction(1.2d));
+        Checks.checkThrows("and a walk speed of zero is rejected",
+                IllegalArgumentException.class, () -> PhysicsProfile.vanilla().withWalkSpeed(0d));
+
+        try {
+            MovementMath.setProfile(vanilla.withWalkSpeed(0.5d));
+            Checks.checkEquals("the default profile is replaceable client-wide", 0.5f,
+                    (float) MovementMath.walkSpeed(0, 0));
+        } finally {
+            MovementMath.setProfile(null);
+        }
+        Checks.checkEquals("and null restores vanilla", vanilla, MovementMath.getProfile());
     }
 
     private static void rotation() {

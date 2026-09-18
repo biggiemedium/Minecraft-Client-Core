@@ -20,6 +20,8 @@ import dev.px.core.module.CategoryRegistry;
 import dev.px.core.module.Module;
 import dev.px.core.module.ModuleRegistry;
 import dev.px.core.module.ThreadedModule;
+import dev.px.core.movement.rotation.RotationService;
+import dev.px.core.movement.simulation.SimulationService;
 import dev.px.core.notification.NotificationService;
 import dev.px.core.platform.Platform;
 import dev.px.core.render.Render;
@@ -92,6 +94,8 @@ public final class Core {
     private final HudService hudService;
     private final GuiService guiService;
     private final ShaderService shaderService;
+    private final RotationService rotationService;
+    private final SimulationService simulationService;
 
     private boolean started;
 
@@ -126,6 +130,12 @@ public final class Core {
         // Inert until the client installs a ShaderBackend, and says nothing when it
         // does not, so a client that ships no GLSL never learns this service exists.
         this.shaderService = services.register(new ShaderService(logger, platform));
+        // Also inert until the client installs a sink: claims are arbitrated, and
+        // with nothing to write them to, nothing is written.
+        this.rotationService = services.register(new RotationService(logger, bus));
+        // Useful with nothing installed: the tracker needs no world, and a
+        // simulation with no collision space is simply a ballistic one.
+        this.simulationService = services.register(new SimulationService(logger, bus));
 
         ThreadedModule.bindThreadService(threadService);
 
@@ -289,6 +299,29 @@ public final class Core {
      */
     public static ShaderService shaders() {
         return get().shaderService;
+    }
+
+    /**
+     * Arbitration for the player's rotation, so two modules that both want the
+     * head cannot silently fight over it.
+     *
+     * <p>Does nothing until a {@link dev.px.core.movement.rotation.RotationSink} is
+     * installed; requests are still accepted and resolved, just never applied.
+     */
+    public static RotationService rotations() {
+        return get().rotationService;
+    }
+
+    /**
+     * Movement prediction: where tracked things have been, and where the real
+     * movement rules say something will end up.
+     *
+     * <p>Tracking works with nothing installed. Simulation falls back to
+     * {@link dev.px.core.movement.simulation.CollisionSpace#empty()} until the
+     * client supplies a world, which makes it a trajectory rather than an error.
+     */
+    public static SimulationService simulation() {
+        return get().simulationService;
     }
 
     public static Platform platform() {

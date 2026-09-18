@@ -2,6 +2,7 @@ package dev.px.core.util.math;
 
 import dev.px.core.math.MathUtil;
 import dev.px.core.math.Vec3;
+import dev.px.core.util.Validate;
 
 /**
  * Movement maths: turning key input into motion, and motion into readable numbers.
@@ -24,39 +25,58 @@ import dev.px.core.math.Vec3;
  *       anything a user reads.</li>
  * </ul>
  *
+ * <h2>Where the numbers come from</h2>
+ *
+ * <p>Gravity, drag, friction, walking speed and the effect multipliers are not
+ * constants here. They are a {@link PhysicsProfile}, because they are one game
+ * version's values rather than universal ones and a client on a version where
+ * they differ needs to be able to say so. Every method that needs them comes in
+ * two forms: one that takes a profile, and one that uses {@link #getProfile()}.
+ *
+ * <pre>{@code
+ * double speed = MovementMath.walkSpeed(2, 0);                 // the default profile
+ * double ice   = MovementMath.friction(slippery, motion, 1d);  // an explicit one
+ *
+ * MovementMath.setProfile(PhysicsProfile.vanilla().withWalkSpeed(0.2806d));  // client-wide
+ * }</pre>
+ *
+ * <p>{@link #TICKS_PER_SECOND} stays a constant because it is not physics: it is
+ * how the protocol defines a tick, and a server running slower is lag rather than
+ * a different rule.
+ *
  * <p><b>Complexity.</b> Everything is O(1) except the three predictors, which
  * simulate a tick at a time and are O(ticks).
  *
- * <p>The constants below are the vanilla values as numbers. Nothing here imports
- * or needs the game.
+ * <p>Nothing here imports or needs the game.
  *
- * @see dev.px.core.util.math.RotationMath for where the player is looking
+ * @see PhysicsProfile for the numbers and what is deliberately not among them
+ * @see RotationMath for where the player is looking
  */
 public final class MovementMath {
 
     /** Ticks in a second on an unlagged server. The conversion behind every BPS readout. */
     public static final double TICKS_PER_SECOND = 20d;
 
-    /** Ground speed of a walking player with no effects, in blocks per tick. */
-    public static final double WALK_SPEED = 0.2873d;
-
-    /** Upward velocity a jump starts with, in blocks per tick. */
-    public static final double JUMP_VELOCITY = 0.42d;
-
-    /** Velocity lost to gravity each tick, before drag. */
-    public static final double GRAVITY = 0.08d;
-
-    /** Vertical velocity retained each tick. Air drag. */
-    public static final double DRAG = 0.98d;
-
-    /** Horizontal velocity retained each tick on normal ground. */
-    public static final double GROUND_FRICTION = 0.91d;
-
-    /** Each level of Speed adds this fraction; each level of Slowness removes this much. */
-    private static final double SPEED_PER_LEVEL = 0.2d;
-    private static final double SLOWNESS_PER_LEVEL = 0.15d;
+    /**
+     * The profile used by every overload that does not take one.
+     *
+     * <p>Volatile because an adapter may set it during startup while a background
+     * module is already reading it. Set once, early; changing it mid-session is
+     * legal but means two modules can disagree about gravity within a tick.
+     */
+    private static volatile PhysicsProfile profile = PhysicsProfile.vanilla();
 
     private MovementMath() {
+    }
+
+    /** @return the profile the no-profile overloads use. Never null. */
+    public static PhysicsProfile getProfile() {
+        return profile;
+    }
+
+    /** Replaces the default profile. Passing null restores {@link PhysicsProfile#vanilla()}. */
+    public static void setProfile(PhysicsProfile replacement) {
+        profile = replacement == null ? PhysicsProfile.vanilla() : replacement;
     }
 
     // ------------------------------------------------------------- direction
@@ -75,6 +95,10 @@ public final class MovementMath {
      * {@code speed} rather than {@code speed * 1.41}. Skipping that step is the
      * single most common bug in a hand-rolled speed module, and the most visible
      * one to anti-cheat.
+     *
+     * <p>Takes the speed rather than reading it from a profile, because the caller
+     * is usually the one deciding it &mdash; sprinting, an item modifier, or the
+     * module's own setting.
      */
     public static Vec3 velocity(float yaw, double forward, double strafe, double speed) {
         double magnitude = forward * forward + strafe * strafe;
@@ -155,77 +179,123 @@ public final class MovementMath {
         return blocksPerSecond(motion.getX(), motion.getZ());
     }
 
+    /** Walking speed with effects applied, using the default profile. */
+    public static double walkSpeed(int speedAmplifier, int slownessAmplifier) {
+        return walkSpeed(profile, speedAmplifier, slownessAmplifier);
+    }
+
     /**
      * @param speedAmplifier Speed level held, 0 for none (so Speed II is 2)
      * @param slownessAmplifier Slowness level held, 0 for none
      * @return walking speed in blocks per tick with those effects applied
      *
      * <pre>
-     * speed = 0.2873 · (1 + 0.2·speedLevel) · (1 - 0.15·slownessLevel)
+     * speed = walkSpeed · (1 + speedPerLevel·speedLevel) · (1 - slownessPerLevel·slownessLevel)
      * </pre>
      *
      * <p>Amplifiers are levels as a player reads them, not the zero-based numbers
      * the game stores. Convert at the adapter, where the off-by-one is visible.
      */
-    public static double walkSpeed(int speedAmplifier, int slownessAmplifier) {
-        double speed = WALK_SPEED * (1d + SPEED_PER_LEVEL * Math.max(0, speedAmplifier));
-        speed *= 1d - SLOWNESS_PER_LEVEL * Math.max(0, slownessAmplifier);
+    public static double walkSpeed(PhysicsProfile profile, int speedAmplifier, int slownessAmplifier) {
+        Validate.notNull(profile, "profile");
+        double speed = profile.getWalkSpeed()
+                * (1d + profile.getSpeedPerLevel() * Math.max(0, speedAmplifier));
+        speed *= 1d - profile.getSlownessPerLevel() * Math.max(0, slownessAmplifier);
         return Math.max(0d, speed);
     }
 
     /** @return the upward velocity a jump starts with, given a Jump Boost level. */
     public static double jumpVelocity(int jumpBoostAmplifier) {
-        return JUMP_VELOCITY + 0.1d * Math.max(0, jumpBoostAmplifier);
+        return jumpVelocity(profile, jumpBoostAmplifier);
+    }
+
+    public static double jumpVelocity(PhysicsProfile profile, int jumpBoostAmplifier) {
+        Validate.notNull(profile, "profile");
+        return profile.getJumpVelocity()
+                + profile.getJumpBoostPerLevel() * Math.max(0, jumpBoostAmplifier);
     }
 
     // ------------------------------------------------------------ prediction
 
+    /** Vertical velocity one tick later, using the default profile. */
+    public static double fall(double motionY) {
+        return fall(profile, motionY);
+    }
+
     /**
      * @return vertical velocity one tick later, gravity and drag applied:
-     *         {@code v' = (v - 0.08) · 0.98}
+     *         {@code v' = (v - gravity) · drag}
      */
-    public static double fall(double motionY) {
-        return (motionY - GRAVITY) * DRAG;
+    public static double fall(PhysicsProfile profile, double motionY) {
+        Validate.notNull(profile, "profile");
+        return (motionY - profile.getGravity()) * profile.getDrag();
+    }
+
+    /** Horizontal velocity one tick later, using the default profile. */
+    public static double friction(double motion, double slipperiness) {
+        return friction(profile, motion, slipperiness);
     }
 
     /**
      * @return horizontal velocity one tick later on a surface of that
-     *         slipperiness: {@code v' = v · slipperiness · 0.91}
+     *         slipperiness: {@code v' = v · slipperiness · groundFriction}
+     *
+     * <p>Slipperiness stays an argument rather than joining the profile: it is a
+     * property of the block underfoot, not of the game version, and it changes
+     * every time the player steps off ice.
      */
-    public static double friction(double motion, double slipperiness) {
-        return motion * slipperiness * GROUND_FRICTION;
+    public static double friction(PhysicsProfile profile, double motion, double slipperiness) {
+        Validate.notNull(profile, "profile");
+        return motion * slipperiness * profile.getGroundFriction();
+    }
+
+    /** How far the player falls over {@code ticks}, using the default profile. */
+    public static double fallDistance(double motionY, int ticks) {
+        return fallDistance(profile, motionY, ticks);
     }
 
     /**
      * @return how far the player falls over {@code ticks}, starting from
      *         {@code motionY}. Negative is downward, matching motion
      *
-     * <p>O(ticks), iterating {@code v ← (v - 0.08) · 0.98} and accumulating.
+     * <p>O(ticks), iterating {@code v ← (v - gravity) · drag} and accumulating.
      *
      * <p>Simulated rather than solved, because the closed form for a geometric
      * series with drag is easy to get subtly wrong and this runs a handful of
      * iterations at most. Ignores collision: it answers where the player would be
      * in open air, which is what a fall-damage warning or a scaffold needs.
      */
-    public static double fallDistance(double motionY, int ticks) {
+    public static double fallDistance(PhysicsProfile profile, double motionY, int ticks) {
+        Validate.notNull(profile, "profile");
         double velocity = motionY;
         double travelled = 0d;
         for (int tick = 0; tick < ticks; tick++) {
-            velocity = fall(velocity);
+            velocity = fall(profile, velocity);
             travelled += velocity;
         }
         return travelled;
     }
 
-    /** @return ticks of free fall before reaching {@code speed} downward. */
+    /** Ticks of free fall before reaching {@code speed}, using the default profile. */
     public static int ticksToFallSpeed(double speed) {
+        return ticksToFallSpeed(profile, speed);
+    }
+
+    /** @return ticks of free fall before reaching {@code speed} downward. */
+    public static int ticksToFallSpeed(PhysicsProfile profile, double speed) {
+        Validate.notNull(profile, "profile");
         double velocity = 0d;
         int ticks = 0;
         while (-velocity < Math.abs(speed) && ticks < 1000) {
-            velocity = fall(velocity);
+            velocity = fall(profile, velocity);
             ticks++;
         }
         return ticks;
+    }
+
+    /** Where unimpeded motion ends up after {@code ticks}, using the default profile. */
+    public static Vec3 predict(Vec3 position, Vec3 motion, int ticks) {
+        return predict(profile, position, motion, ticks);
     }
 
     /**
@@ -238,7 +308,8 @@ public final class MovementMath {
      * close enough on the ground for the tick or two a prediction usually spans.
      * There is no collision here; this is a trajectory, not a simulation.
      */
-    public static Vec3 predict(Vec3 position, Vec3 motion, int ticks) {
+    public static Vec3 predict(PhysicsProfile profile, Vec3 position, Vec3 motion, int ticks) {
+        Validate.notNull(profile, "profile");
         double x = position.getX();
         double y = position.getY();
         double z = position.getZ();
@@ -246,7 +317,7 @@ public final class MovementMath {
         for (int tick = 0; tick < ticks; tick++) {
             x += motion.getX();
             z += motion.getZ();
-            velocityY = fall(velocityY);
+            velocityY = fall(profile, velocityY);
             y += velocityY;
         }
         return Vec3.of(x, y, z);

@@ -83,6 +83,19 @@ public final class Box {
                 maxX + amount, maxY + amount, maxZ + amount);
     }
 
+    /**
+     * Grows the box along a motion vector: forwards on each positive component,
+     * backwards on each negative one.
+     *
+     * <p>The region a moving box could touch this tick, which is what a collision
+     * sweep collects obstacles from before it starts clipping.
+     */
+    public Box stretch(double dx, double dy, double dz) {
+        return new Box(
+                minX + Math.min(dx, 0d), minY + Math.min(dy, 0d), minZ + Math.min(dz, 0d),
+                maxX + Math.max(dx, 0d), maxY + Math.max(dy, 0d), maxZ + Math.max(dz, 0d));
+    }
+
     public Box offset(double dx, double dy, double dz) {
         return new Box(minX + dx, minY + dy, minZ + dz, maxX + dx, maxY + dy, maxZ + dz);
     }
