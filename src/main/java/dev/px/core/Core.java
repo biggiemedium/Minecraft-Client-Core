@@ -26,6 +26,7 @@ import dev.px.core.render.Render;
 import dev.px.core.render.font.FontService;
 import dev.px.core.render.theme.ThemeService;
 import dev.px.core.service.ServiceContainer;
+import dev.px.core.shader.ShaderService;
 import dev.px.core.setting.SettingChangeEvent;
 import dev.px.core.social.SocialService;
 import dev.px.core.util.ConsoleLogger;
@@ -90,6 +91,7 @@ public final class Core {
     private final IntegrationService integrationService;
     private final HudService hudService;
     private final GuiService guiService;
+    private final ShaderService shaderService;
 
     private boolean started;
 
@@ -121,6 +123,9 @@ public final class Core {
         this.hudService = services.register(new HudService(logger, platform));
         this.guiService = services.register(
                 new GuiService(logger, platform, moduleRegistry, categories, themeService));
+        // Inert until the client installs a ShaderBackend, and says nothing when it
+        // does not, so a client that ships no GLSL never learns this service exists.
+        this.shaderService = services.register(new ShaderService(logger, platform));
 
         ThreadedModule.bindThreadService(threadService);
 
@@ -274,6 +279,16 @@ public final class Core {
 
     public static GuiService gui() {
         return get().guiService;
+    }
+
+    /**
+     * Shader compilation, caching and uniform upload.
+     *
+     * <p>Does nothing at all until a {@link dev.px.core.shader.ShaderBackend} is
+     * installed, and passes drawn through it run their body unshaded until one is.
+     */
+    public static ShaderService shaders() {
+        return get().shaderService;
     }
 
     public static Platform platform() {

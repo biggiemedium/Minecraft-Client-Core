@@ -15,6 +15,7 @@ import dev.px.core.test.suite.ModuleTests;
 import dev.px.core.test.suite.RegistryTests;
 import dev.px.core.test.suite.ServiceTests;
 import dev.px.core.test.suite.SettingTests;
+import dev.px.core.test.suite.ShaderTests;
 import dev.px.core.test.suite.ShapeTests;
 import dev.px.core.test.suite.SpatialTests;
 import dev.px.core.test.suite.UtilTests;
@@ -62,6 +63,7 @@ public final class CoreSmokeTest {
         HudContentTests.run(client);
         HudLayoutTests.run(client);
         HudEditorTests.run(client);
+        ShaderTests.run(client);
 
         // Config runs last: it mutates state across every other section, so
         // running it earlier would leave the others reading a loaded profile.
