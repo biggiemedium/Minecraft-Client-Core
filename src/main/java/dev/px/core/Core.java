@@ -22,6 +22,7 @@ import dev.px.core.module.ModuleRegistry;
 import dev.px.core.module.ThreadedModule;
 import dev.px.core.movement.rotation.RotationService;
 import dev.px.core.movement.simulation.SimulationService;
+import dev.px.core.movement.timeline.TimelineRecorder;
 import dev.px.core.notification.NotificationService;
 import dev.px.core.platform.Platform;
 import dev.px.core.render.Render;
@@ -96,6 +97,7 @@ public final class Core {
     private final ShaderService shaderService;
     private final RotationService rotationService;
     private final SimulationService simulationService;
+    private final TimelineRecorder timelineRecorder;
 
     private boolean started;
 
@@ -136,6 +138,9 @@ public final class Core {
         // Useful with nothing installed: the tracker needs no world, and a
         // simulation with no collision space is simply a ballistic one.
         this.simulationService = services.register(new SimulationService(logger, bus));
+        // Subscribes to nothing until a recording begins, so registering it
+        // unconditionally costs a client that never records nothing at all.
+        this.timelineRecorder = services.register(new TimelineRecorder(logger, bus));
 
         ThreadedModule.bindThreadService(threadService);
 
@@ -322,6 +327,18 @@ public final class Core {
      */
     public static SimulationService simulation() {
         return get().simulationService;
+    }
+
+    /**
+     * Records packets, ticks and the player's movement between two points in
+     * time, in one exactly-ordered timeline.
+     *
+     * <p>Idle until {@link TimelineRecorder#begin} is called. Packets read as
+     * their class name until the adapter installs a
+     * {@link dev.px.core.movement.timeline.PacketDescriber}.
+     */
+    public static TimelineRecorder timeline() {
+        return get().timelineRecorder;
     }
 
     public static Platform platform() {

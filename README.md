@@ -1789,6 +1789,81 @@ Sprinting, sneaking, water, cobwebs and per-block slipperiness are deliberately
 multipliers, and the honest place for them is a simulation that models the
 branches — which is why `friction` takes slipperiness as an argument.
 
+### Timeline recording
+
+`Core.timeline()` records what the client and server said to each other, and
+what the client was doing at the time, into one exactly-ordered timeline
+between two points you choose.
+
+```java
+Core.timeline().setDescriber(new MyPacketDescriber());   // once, from the adapter
+Core.timeline().putMetadata("gameVersion", "1.8.9");
+
+Core.timeline().begin("velocity test");
+// ... play ...
+Core.timeline().mark("hit");
+// ... play ...
+Timeline timeline = Core.timeline().end();
+
+try (Writer out = Files.newBufferedWriter(path)) {
+    TimelineJson.write(timeline, out);                    // JSON Lines, one entry per line
+}
+```
+
+Every entry carries a **seq** (global, gapless, the one true order), a monotonic
+**nanos** since `begin`, the client **tick** it happened in, and its
+**`EntryType`**: tick start and end, packet, motion before and after the client
+reports it, correction, world change, mark. Packets add direction, phase, the
+describer's type name and `PacketKind`, and whatever position, velocity,
+rotation, ground state and extra fields the describer pulled out. Motion
+entries add position, velocity, ground, the held `MovementInput`, sprint and
+sneak state, and rotation with last tick's rotation.
+
+It is built from events rather than hooks of its own, and adapters post them
+for their modules anyway:
+
+| Event | Post it | Gives the timeline |
+|---|---|---|
+| `TickEvent` | already posted, PRE and POST | tick boundaries |
+| `PacketEvent.sent(p)` | before an outbound packet is written | outbound traffic |
+| `PacketEvent.received(p)` | network thread, as an inbound packet is decoded | true arrival order |
+| `PacketEvent.applied(p)` | game thread, as that packet's handler runs | the tick it took effect |
+| `MotionUpdateEvent` | PRE and POST around the client's movement packet | what the client believed |
+| `WorldEvent` | already posted | world load and unload |
+
+Post `received` and `applied` with the **same packet instance**: that is what
+links them, so `timeline.linked(applied)` finds the arrival and the difference
+in `nanos` is how long it sat in the queue. An applied `TELEPORT`, `VELOCITY` or
+`EXPLOSION` is followed immediately by a `CORRECTION` entry pointing at it,
+whose `clientSeq` field is the client's last motion entry, the state the
+server just overruled.
+
+The queries are about how entries relate, not about single entries:
+`responsesTo(sent, PacketKind.TELEPORT, 5)` finds what arrived within five ticks
+of an outbound packet, going by timing; `correlated(entry)` pairs a
+transaction, keep-alive or teleport confirm with its reply exactly, by the
+correlation key the describer gave both; `between("jump", "landed")` slices
+between two marks.
+
+**Ordering holds across threads.** Handlers run on the posting thread, so
+packets arrive from the network thread while ticks arrive from the game thread.
+Seq, time and tick are all assigned under one lock in the same step that
+appends the entry, so seq never ties and time never runs backwards along it.
+Tick boundaries listen at the extremes of the priority range, so a packet a
+module sends from its own tick handler lands inside that tick.
+
+**The describer** is the one piece of version knowledge it needs: one method
+from packet to `PacketDescription`. Without one, packets are recorded under
+their class name as `OTHER`, which in an obfuscated build means `a`. A describer
+that throws costs that packet its description, not its entry, and is logged
+once.
+
+**Idle is free.** The recorder subscribes to nothing and allocates nothing until
+`begin`, and `end` gives both back. It reads nothing from `RotationService` or
+`SimulationService`, and neither knows it exists. A recording keeps at most
+`setCapacity(n)` entries (262,144 by default), dropping the oldest and counting
+them; `setFilter` narrows which packets are kept.
+
 ### Not using any of this
 
 Install no `RotationSink` and that service is inert: claims are still accepted
@@ -1804,6 +1879,10 @@ question, so nothing warns about it.
 
 `MovementCorrection` is static and needs nothing installed, and nothing outside
 `dev.px.core.movement` references any of it.
+
+Never call `Core.timeline().begin(...)` and the recorder never subscribes to
+anything. Install no `PacketDescriber` and a recording still works, with
+packets named by class.
 
 ---
 
@@ -1830,6 +1909,7 @@ question, so nothing warns about it.
 | `movement` | `MovementCorrection` — re-bases the movement keys onto an applied rotation so the player still walks where they meant to. Static, no seam. See §10 |
 | `movement.rotation` | `RotationService` — priority arbitration for the player's rotation, with claims that expire rather than needing release. `RotationRequest`, `RotationPriority`, `RotationMode`, and the two-method `RotationSink` your adapter writes |
 | `movement.simulation` | `SimulationService` — `Simulation` (the real movement rules, axis-separated collision, step-up) over a one-method `CollisionSpace`, plus `MotionTracker` / `MotionTrack` (bounded history per opaque key), `DriftMonitor` (scores the model against the game every tick and says when to stop trusting it), `PhysicsCalibration` (offline: measure the gap, sweep a constant to close it) and the `MotionState` / `MovementInput` values they pass around |
+| `movement.timeline` | `TimelineRecorder` — records packets, ticks and the player's movement between two points in time, in one exactly-ordered `Timeline` of `TimelineEntry`s, with queries for links, replies and correlation. `PacketDescriber` (the one-method SPI your adapter writes) turns packets into `PacketDescription`s; `TimelineJson` reads and writes JSON Lines |
 | `math` | `Vec2`, `Vec3`, `Vec3i` (the block grid), `Direction`, `Box`, `Range`, `MathUtil`, `Stopwatch` (cooldowns) |
 | `util` | `Validate`, `Reflect`, `CoreLogger` / `ConsoleLogger` |
 | `util.collect` | `Pair`, `Triplet`, `CircularQueue` / `CircularDeque` (bounded histories that never grow), `RollingAverage` (allocation-free smoothing for FPS / ping / CPS), `LruCache` / `ExpiringCache` (bounded by size and by age), `Trie` (prefix completion), `WeightedList` |
@@ -1886,7 +1966,8 @@ Optional: `RotationSink` if you want Core arbitrating rotations — two methods,
 and modules stop fighting over the head; `CollisionSpace` if you want movement
 simulation — one method, and the motion tracker works without it; `ShaderBackend` if you use `shader` —
 one class of ordinary GL, and nothing else in Core notices whether it exists; `AuthProvider` (alt manager),
-`PresenceProvider` / `MediaProvider`, and `PathSpace` if you use `util.spatial` — one lambda saying which cells your agent
+`PresenceProvider` / `MediaProvider`, `PacketDescriber` plus `PacketEvent` and `MotionUpdateEvent` posts if you want
+timeline recordings — see §10, and `PathSpace` if you use `util.spatial` — one lambda saying which cells your agent
 can occupy is enough to run `AStar` against your world.
 
 Core runs headless without any of these. The test suite boots it with none
@@ -1896,7 +1977,7 @@ installed, which is how the seam stays honest.
 
 ## 13. Verifying
 
-`dev.px.core.test.CoreSmokeTest` runs **1163 checks** in a plain JVM — no
+`dev.px.core.test.CoreSmokeTest` runs **1254 checks** in a plain JVM — no
 Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
@@ -1925,6 +2006,7 @@ src/test/java/dev/px/core/test/
 | `ShaderTests` | include inlining and include-once, version hoisting, defines, uniform recording for every type, compile-on-first-use, bind/unbind pairing and nesting, a throwing draw, a broken shader contained and logged once, reload, a lost context |
 | `MovementTests` | that corrected input travels where the player asked, swept over every facing, key pair and applied rotation: strict rounding never off by more than half a key step and never emitting a value a keyboard could not, exact rounding not off at all |
 | `SimulationTests` | walk, sprint, sneak and jump against the figures Minecraft is measured at (not against our own constants); landing on a floor rather than through it, a forty-block-a-tick fall not tunnelling, walls stopping the blocked axis only, half-height ledges stepped onto and full blocks not, ice sliding further, one world query per tick; drift going to zero on a matching world, spiking on a mismatched one and naming the axis, teleports excluded; calibration recovering a planted constant it was never told; and for the tracker: ring wrapping, a missed tick averaged not doubled, eviction |
+| `TimelineTests` | exact entry order including packets sent from inside tick handlers, gapless seq and monotonic time with four threads posting packets against ticks, received and applied halves linked by instance and not equality, corrections following applied teleports and velocity, reply finding by time window and by correlation key, marks, filters and capacity, a throwing describer contained and logged once, JSON Lines round-tripping equal, and no subscription at all while idle |
 | `RotationTests` | priority arbitration, stable tie-breaking across renewals, claims expiring without release, stepped and snapped turns, the short way round 180, that reads and requests commute in any order, easing back on release, both modes, the inert no-sink path |
 | `GuiTests` | renderer lookup and replacement, tree structure, visibility gating, hit routing, every setting type edited through the GUI, the input gate, window persistence |
 | `ConfigTests` | full round-trip, profiles, second-load regression, path sanitising |
@@ -1937,4 +2019,4 @@ bootstrap minus the render backends.
 
 ## Not yet included
 
-- **Adapter layer** — `Player`, `World`, `Entity`, packet wrappers.
+- **Adapter layer** — `Player`, `World`, `Entity`, packet wrappers. (Packets reach Core only as opaque objects in `PacketEvent`, read through the adapter's `PacketDescriber`.)

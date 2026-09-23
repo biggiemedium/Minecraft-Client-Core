@@ -21,6 +21,7 @@ import dev.px.core.test.suite.ShaderTests;
 import dev.px.core.test.suite.ShapeTests;
 import dev.px.core.test.suite.SimulationTests;
 import dev.px.core.test.suite.SpatialTests;
+import dev.px.core.test.suite.TimelineTests;
 import dev.px.core.test.suite.UtilTests;
 
 /**
@@ -70,6 +71,7 @@ public final class CoreSmokeTest {
         ShaderTests.run(client);
         RotationTests.run(client);
         SimulationTests.run(client);
+        TimelineTests.run(client);
 
         // Config runs last: it mutates state across every other section, so
         // running it earlier would leave the others reading a loaded profile.
