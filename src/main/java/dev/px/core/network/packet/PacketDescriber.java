@@ -1,4 +1,4 @@
-package dev.px.core.movement.timeline;
+package dev.px.core.network.packet;
 
 /**
  * Turns a packet the adapter posted into something Core can record.
@@ -25,6 +25,12 @@ package dev.px.core.movement.timeline;
  * };
  * }</pre>
  *
+ * <p>{@link #byClass()} builds one from a rule per packet class instead, which
+ * reads better and costs one lookup per packet rather than a test per branch.
+ *
+ * <p>Install it once, with {@code Core.network().setDescriber(...)}. The
+ * timeline recorder and every network service read through that one.
+ *
  * <p><b>Name packets with string literals</b>, not {@code getClass().getSimpleName()},
  * wherever the build is obfuscated: in production the class is called
  * {@code a} or {@code class_2828}, and a recording full of those is unreadable.
@@ -46,4 +52,9 @@ public interface PacketDescriber {
      * @return its description, or null to fall back to {@link #DEFAULT}
      */
     PacketDescription describe(Object packet);
+
+    /** Starts a describer built from one rule per packet class. See {@link ClassPacketDescriber}. */
+    static ClassPacketDescriber.Builder byClass() {
+        return new ClassPacketDescriber.Builder();
+    }
 }

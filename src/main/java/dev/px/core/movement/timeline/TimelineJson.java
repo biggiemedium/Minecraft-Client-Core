@@ -12,6 +12,8 @@ import dev.px.core.event.impl.PacketEvent.Phase;
 import dev.px.core.math.Vec2;
 import dev.px.core.math.Vec3;
 import dev.px.core.movement.simulation.MovementInput;
+import dev.px.core.network.packet.PacketDescription;
+import dev.px.core.network.packet.PacketKind;
 import dev.px.core.util.Validate;
 
 import java.io.BufferedReader;

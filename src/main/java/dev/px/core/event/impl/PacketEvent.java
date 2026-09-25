@@ -10,7 +10,7 @@ import lombok.Getter;
  * <p>Core has no packet types, so the packet is an {@code Object} and only the
  * adapter knows what it is. Anything that needs to read one &mdash; the timeline
  * recorder included &mdash; goes through a
- * {@link dev.px.core.movement.timeline.PacketDescriber} rather than casting.
+ * {@link dev.px.core.network.packet.PacketDescriber} rather than casting.
  *
  * <h2>Where to post it</h2>
  *

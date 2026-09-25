@@ -1,5 +1,7 @@
 package dev.px.core.movement.timeline;
 
+import dev.px.core.network.packet.PacketKind;
+
 /** What a {@link TimelineEntry} records. */
 public enum EntryType {
 

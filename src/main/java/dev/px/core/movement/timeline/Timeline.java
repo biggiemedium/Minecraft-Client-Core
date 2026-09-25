@@ -1,6 +1,7 @@
 package dev.px.core.movement.timeline;
 
 import dev.px.core.event.impl.PacketEvent.Phase;
+import dev.px.core.network.packet.PacketKind;
 import dev.px.core.util.Validate;
 import lombok.Getter;
 

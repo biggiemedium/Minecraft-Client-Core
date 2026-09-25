@@ -141,8 +141,12 @@ public final class SpatialGrid<T> {
      * that only needs to draw each match should use.
      */
     public void forEachWithin(Vec3 center, double radius, Consumer<T> action) {
-        forEachEntry(center.getX(), center.getY(), center.getZ(), radius,
-                entry -> action.accept(entry.value));
+        forEachWithin(center.getX(), center.getY(), center.getZ(), radius, action);
+    }
+
+    /** {@link #forEachWithin(Vec3, double, Consumer)} without building a {@code Vec3} for the centre. */
+    public void forEachWithin(double x, double y, double z, double radius, Consumer<T> action) {
+        forEachEntry(x, y, z, radius, entry -> action.accept(entry.value));
     }
 
     /** @return the closest thing within {@code radius}, or {@code null}. */

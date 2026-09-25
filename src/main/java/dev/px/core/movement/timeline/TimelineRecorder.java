@@ -9,6 +9,9 @@ import dev.px.core.event.impl.PacketEvent.Direction;
 import dev.px.core.event.impl.PacketEvent.Phase;
 import dev.px.core.event.impl.TickEvent;
 import dev.px.core.event.impl.WorldEvent;
+import dev.px.core.network.packet.PacketDescriber;
+import dev.px.core.network.packet.PacketDescription;
+import dev.px.core.network.packet.PacketKind;
 import dev.px.core.service.Service;
 import dev.px.core.util.CoreLogger;
 import dev.px.core.util.Validate;
@@ -26,7 +29,7 @@ import java.util.function.Predicate;
  * was doing at the time, in one exactly-ordered timeline.
  *
  * <pre>{@code
- * Core.timeline().setDescriber(new MyPacketDescriber());   // once, from the adapter
+ * Core.network().setDescriber(new MyPacketDescriber());    // once, from the adapter
  *
  * Core.timeline().begin("velocity test");
  * // ... play ...
@@ -144,7 +147,13 @@ public final class TimelineRecorder implements Service {
 
     // ------------------------------------------------------------- settings
 
-    /** @param describer how to read the adapter's packets, or null for {@link PacketDescriber#DEFAULT} */
+    /**
+     * @param describer how to read the adapter's packets, or null for {@link PacketDescriber#DEFAULT}
+     *
+     * <p>A booted client already reads through {@code Core.network()}'s describer,
+     * so an adapter installs its describer there and never calls this. It is for a
+     * recorder used on its own, or one that should read packets differently.
+     */
     public void setDescriber(PacketDescriber describer) {
         this.describer = describer != null ? describer : PacketDescriber.DEFAULT;
         this.warnedAboutDescriber = false;

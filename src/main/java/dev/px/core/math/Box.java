@@ -116,6 +116,43 @@ public final class Box {
                 && maxZ > other.minZ && minZ < other.maxZ;
     }
 
+    /** @return the point of the box nearest {@code point}; the point itself when it is inside */
+    public Vec3 closestPoint(Vec3 point) {
+        return Vec3.of(
+                MathUtil.clamp(point.getX(), minX, maxX),
+                MathUtil.clamp(point.getY(), minY, maxY),
+                MathUtil.clamp(point.getZ(), minZ, maxZ));
+    }
+
+    /** @return the squared distance from {@code point} to the nearest point of the box; 0 inside it */
+    public double squaredDistanceTo(Vec3 point) {
+        double dx = Math.max(Math.max(minX - point.getX(), 0d), point.getX() - maxX);
+        double dy = Math.max(Math.max(minY - point.getY(), 0d), point.getY() - maxY);
+        double dz = Math.max(Math.max(minZ - point.getZ(), 0d), point.getZ() - maxZ);
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    /** @return the distance from {@code point} to the nearest point of the box; 0 inside it */
+    public double distanceTo(Vec3 point) {
+        return Math.sqrt(squaredDistanceTo(point));
+    }
+
+    /**
+     * Shrinks the box by {@code amount} on every side.
+     *
+     * <p>Unlike {@code expand(-amount)}, an axis too short to shrink that far
+     * collapses to its midpoint rather than turning inside out, so the result is
+     * always a box inside this one.
+     */
+    public Box inset(double amount) {
+        double centreX = (minX + maxX) / 2d;
+        double centreY = (minY + maxY) / 2d;
+        double centreZ = (minZ + maxZ) / 2d;
+        return new Box(
+                Math.min(minX + amount, centreX), Math.min(minY + amount, centreY), Math.min(minZ + amount, centreZ),
+                Math.max(maxX - amount, centreX), Math.max(maxY - amount, centreY), Math.max(maxZ - amount, centreZ));
+    }
+
     /** @return the eight corners, in the order a wireframe renderer wants them. */
     public Vec3[] corners() {
         return new Vec3[] {
