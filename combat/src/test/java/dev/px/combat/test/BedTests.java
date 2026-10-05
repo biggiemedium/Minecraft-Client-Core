@@ -192,6 +192,11 @@ public final class BedTests {
         Checks.check("up to four spots a cell, one per facing (" + stats + ")",
                 stats.getPlaceable() > stats.getInReach() && stats.getPlaceable() <= 4 * stats.getInReach());
         Checks.check("estimating far fewer than it bounds", stats.getEvaluated() < stats.getBounds() / 4);
+        java.util.List<BedPlaceOption<Fighter>> three = search.findPlaces(3);
+        Checks.check("the best three beds, best first, the first what findPlace finds (" + three + ")",
+                three.size() == 3 && three.get(0).getBed().equals(spot.getBed())
+                        && !three.get(1).beats(three.get(0)) && !three.get(2).beats(three.get(1))
+                        && !three.get(1).getBed().equals(three.get(0).getBed()));
 
         BedSearch<Fighter> north = arena.search(b -> b.facings(() -> new Direction[] { Direction.NORTH }));
         BedPlaceOption<Fighter> facing = north.findPlace();

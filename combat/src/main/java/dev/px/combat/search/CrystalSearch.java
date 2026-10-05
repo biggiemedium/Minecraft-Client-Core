@@ -20,6 +20,8 @@ import dev.px.core.math.Vec3;
 import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -45,6 +47,11 @@ import java.util.function.Consumer;
  * if (hit != null) { attack(hit.getCrystal().get()); search.attacked(hit.getCrystal()); }
  * PlaceOption<LivingEntity> spot = search.findPlace();
  * if (spot != null) place(spot.getX(), spot.getY(), spot.getZ());
+ *
+ * // or the best few, to fall back on when you cannot reach the first:
+ * for (PlaceOption<LivingEntity> option : search.findPlaces(3)) {
+ *     if (canRotateTo(option)) { place(option.getX(), option.getY(), option.getZ()); break; }
+ * }
  *
  * // from your spawn-packet handler, for an instant break:
  * BreakOption<LivingEntity> now = search.spawned(crystalEntity);
@@ -94,8 +101,24 @@ public final class CrystalSearch<E> {
     /** @return the best place to put a crystal now, or null when nowhere is worth it */
     public PlaceOption<E> findPlace() {
         Found<E, Vec3i> found = engine.findPlace(placing);
-        return found == null ? null : new PlaceOption<>(found.getSubject().getX(), found.getSubject().getY(),
-                found.getSubject().getZ(), found);
+        return found == null ? null : toPlace(found);
+    }
+
+    /**
+     * The best {@code count} places to put a crystal now, best first: somewhere to
+     * fall back on when you cannot rotate to or reach the first. They are
+     * alternatives, not a set to fill together &mdash; two may be too close to both
+     * hold a crystal.
+     *
+     * @return at most {@code count} options, each on its own base; empty when nowhere is worth it
+     */
+    public List<PlaceOption<E>> findPlaces(int count) {
+        List<Found<E, Vec3i>> found = engine.findPlaces(placing, count);
+        List<PlaceOption<E>> places = new ArrayList<>(found.size());
+        for (Found<E, Vec3i> option : found) {
+            places.add(toPlace(option));
+        }
+        return places;
     }
 
     /** @return the best crystal to break now, or null when none is worth it */
@@ -153,6 +176,11 @@ public final class CrystalSearch<E> {
     /** Stops listening to the bus given at build time. */
     public void close() {
         engine.close();
+    }
+
+    private PlaceOption<E> toPlace(Found<E, Vec3i> found) {
+        Vec3i base = found.getSubject();
+        return new PlaceOption<>(base.getX(), base.getY(), base.getZ(), found);
     }
 
     private BreakOption<E> toBreak(Found<E, Tracked<?>> found) {

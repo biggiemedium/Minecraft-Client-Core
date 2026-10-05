@@ -13,9 +13,10 @@ you swap the one rule that changed. Nothing in this module needs a rewrite, and
 the [damage monitor](#6-the-damage-monitor) and [test vectors](#7-test-vectors)
 tell you which rule it was.
 
-**Status.** The rules layer, the search — where to place, what to break, every
-threshold and timing rule — for crystals and beds, the damage monitor and test
-vectors are done. See
+**Status.** The rules layer, the search — where to place, what to break, the
+best few places, every threshold and timing rule, protecting friends and your
+own filters — for crystals and beds, the damage monitor and test vectors are
+done. See
 [Not yet included](#not-yet-included) for what comes next.
 
 **Requires:** Core, Java 8, Gson (ships with Minecraft). Inside this repository:
@@ -120,6 +121,7 @@ public final class CombatSetup {
     public final ExplosionModel<LivingEntity> explosions;
     public final CrystalRules<LivingEntity> rules;
     public final TargetSelector<LivingEntity> enemies;
+    public final TargetSelector<LivingEntity> friends;
 
     public CombatSetup() {
         vitals = new Vitals<LivingEntity>() {
@@ -156,6 +158,12 @@ public final class CombatSetup {
         enemies = TargetSelector.from(LivingTracker.class)
                 .range(12)
                 .where(e -> e instanceof PlayerEntity && !Core.social().isFriend(Game.nameOf(e)))
+                .build();
+
+        // Who must not be hurt: friends anywhere an explosion could reach (place range + 2 · power).
+        friends = TargetSelector.from(LivingTracker.class)
+                .range(18)
+                .where(e -> e instanceof PlayerEntity && Core.social().isFriend(Game.nameOf(e)))
                 .build();
     }
 
@@ -267,6 +275,10 @@ public final class CrystalAura extends Module {
     private final BindSetting           faceKey    = bind("Faceplace Key");
     private final NumberSetting<Double> armourWorn = decimal("Armour Break %", 15, 0, 100);
 
+    // ---- friends
+    private final NumberSetting<Double> friendMax = decimal("Friend Max Damage", 6, 0, 36);
+    private final BooleanSetting        antiPop   = bool("Friend Anti Pop", true).describe("Never leave a friend near death");
+
     // ---- timing
     private final NumberSetting<Integer> ticksExisted = integer("Ticks Existed", 0, 0, 10);
     private final NumberSetting<Integer> inhibit      = integer("Inhibit Ticks", 3, 0, 10);
@@ -291,6 +303,8 @@ public final class CrystalAura extends Module {
                 .facePlace(faceHealth::getDouble, faceDamage::getDouble)
                 .facePlaceWhen(() -> faceHeld)
                 .armourBreak(Game::mostWornArmourPercent, armourWorn::getDouble, faceDamage::getDouble)
+                .maxProtectedDamage(friendMax::getDouble)
+                .protectedMargin(() -> antiPop.isOn() ? 2 : Double.NEGATIVE_INFINITY)
                 .breakMinAge(ticksExisted::getInt)
                 .inhibit(inhibit::getInt)
                 .build();
@@ -299,6 +313,7 @@ public final class CrystalAura extends Module {
                 .rules(combat.rules)
                 .entities(Core.entities())
                 .targets(Core.targets(), combat.enemies)
+                .protect(combat.friends)                // never targeted, and the friend limits above apply
                 .crystals(combat.crystals)
                 .vitals(combat.vitals)
                 .placeReach(Reach.of(placeRange::getDouble, placeWall::getDouble))
@@ -449,9 +464,10 @@ monitor.exploded(Vec3.of(packet.getX(), packet.getY(), packet.getZ()), combat.ru
 | Yours, per client | Yours, per game version | The library's |
 |---|---|---|
 | the settings and their defaults | `CombatSetup` and its `Profile` | the scan, the bounds, branch and bound |
-| how you rotate, swap and swing | the `Game.…` wrappers | every threshold and trigger |
+| how you rotate, swap and swing | the `Game.…` wrappers | every threshold and trigger, and protecting friends |
 | what you render and log | which blocks are bases, the clearance number | inhibit, minimum age, spawn breaks |
 | when to place and break, and in which order | the explosion and armour formulas | the one-explosion-per-tick rule |
+| who your friends are, and any filter of your own | | the best few places, ranked |
 
 ---
 
@@ -720,6 +736,8 @@ Thresholds<LivingEntity> thresholds = Thresholds.<LivingEntity>builder()
         .facePlace(faceHealth::getDouble, faceDamage::getDouble)
         .facePlaceWhen(faceKey::isDown)
         .armourBreak(this::mostWornPiece, armourPercent::getDouble, faceDamage::getDouble)
+        .maxProtectedDamage(friendMax::getDouble)                  // the most any friend may take
+        .protectedMargin(() -> 2)                                  // and never leave one within a heart
         .breakMinAge(ticksExisted::getInt)
         .inhibit(inhibitTicks::getInt)
         .build();
@@ -728,6 +746,7 @@ CrystalSearch<LivingEntity> search = CrystalSearch.<LivingEntity>builder()
         .rules(crystals)                                           // your CrystalRules
         .entities(Core.entities())                                 // you
         .targets(Core.targets(), enemies)                          // a TargetSelector: who counts
+        .protect(friends)                                          // a TargetSelector: who must not be hurt
         .crystals(Core.entities().get(CrystalTracker.class))       // crystals already in the world
         .vitals(myVitals)
         .placeReach(Reach.of(placeRange::getDouble, placeWall::getDouble))
@@ -762,6 +781,72 @@ Each option says what to do and why: the target, the damage to them and to you,
 its score, and its `Trigger` — `MINIMUM`, `FACEPLACE`, `ARMOUR_BREAK` or `LETHAL`.
 Draw the damage, log the reason, or skip a faceplace you do not want right now.
 
+### The best few
+
+`findPlaces(n)` returns the best `n` places, best first, each on its own base and
+offered against the target it is best for. They are **alternatives**: somewhere
+to go when you cannot rotate to the first in time, or your server would refuse
+it. They are not a set to fill together — two may be too close to both hold a
+crystal; planning several placements a tick is [not written yet](#not-yet-included).
+
+```java
+for (PlaceOption<LivingEntity> option : search.findPlaces(3)) {
+    if (canRotateTo(option)) {
+        place(option.getX(), option.getY(), option.getZ());
+        break;
+    }
+}
+```
+
+`findPlace()` is `findPlaces(1)`. Branch and bound still applies: it stops once
+nothing left could beat the `n`th best, so asking for more costs more estimates.
+The test suite checks the best four against every option, in 20 random layouts.
+`BedSearch.findPlaces(n)` does the same for beds.
+
+### Protecting friends
+
+`.protect(selector)` names who must not be hurt, with a `TargetSelector` of
+yours — your friends from Core's `SocialService`, teammates, anyone. The search
+then:
+
+- **never targets them**, even when the target selector would pick them. They
+  are left out before `maxTargets` cuts the list, so a friend standing nearest
+  never pushes an enemy out.
+- refuses any placement or break that does more than **`maxProtectedDamage`**
+  to any one of them, or that leaves one within **`protectedMargin`** of death —
+  lethal or not, like anti-suicide. The margin needs their health: when your
+  `Vitals` do not trust it, only the cap protects them.
+
+Both are off until set, and setting them protects nobody until `.protect(...)`
+says who. Give the selector range enough to cover everywhere your explosions
+reach: your place range plus your `Falloff`'s range.
+
+Checking costs little. Most friends are cleared by the same no-ray bound the
+search uses for targets: only one the bound says could be hurt too much is
+raycast. `getLastPlaceStats()` counts those estimates, and the spots refused for
+endangering someone.
+
+### Your own filters
+
+Thresholds cover what most auras need; `.filter(...)` covers the rest. A filter
+sees each option the search is about to choose as a `Proposal`: the target, the
+damage to them and to you, the trigger, the score — and `getProtected()`, what
+the explosion would do to each protected entity it reaches.
+
+```java
+.filter(p -> p.getTrigger() == Trigger.LETHAL || !inHole(p.getTarget().get()))  // only kill campers
+.filter(p -> p.getMostProtectedDamage() < p.getDamage() / 2)                    // friends take half at most
+```
+
+- A filter is asked only about an option that passed every threshold and would
+  be chosen for its spot, so it runs a handful of times a search.
+- Damage to protected entities is raycast only when a filter asks for it, once
+  per explosion.
+- Several filters are all required, asked in the order given.
+- Filters judge breaking as well as placing, and beds as well as crystals.
+- Refusing never lets the search skip a spot it should have tried: branch and
+  bound stays exact, which the test suite checks against brute force.
+
 ### How an option is judged
 
 Per target, in this order:
@@ -776,7 +861,10 @@ Per target, in this order:
    below that.
 3. **Anti-suicide**, if on, refuses anything that leaves you within its margin of
    death — lethal or not.
-4. The **self-damage cap** refuses anything that hurts you more.
+4. **Protection**, when the search protects anyone, refuses anything that hurts
+   one of them past the protected cap or margin — lethal or not.
+5. The **self-damage cap** refuses anything that hurts you more.
+6. Your **filters**, if any, have the last word on an option that would be chosen.
 
 The best option by `Score` wins: `Score.DAMAGE` by default, or `Score.balanced(w)`
 to trade damage for safety, or your own. Ties go to the one that hurts you least.
@@ -822,6 +910,7 @@ break range:
 | exact estimates, typically | a handful: the bound stops the search early |
 | break | O(g + K · (T + 1) · S · L), with g the grid buckets the break range covers |
 | `spawned`, `attacked` | O((T + 1) · S · L): one crystal |
+| protecting F entities | O(F) bounds per spot judged; an exact estimate only for one the bound cannot clear |
 
 For a place range of 5 that is 1331 cells; with a player's hitbox sampled at
 S = 45 and rays of about 20 cells, one exact estimate is around 900 cell tests —
@@ -830,19 +919,22 @@ which is why the bound matters more than anything else here. In the test arena,
 
 Pruning assumes damage never falls as exposure rises, and that a score is never
 more than the damage to the target. Both hold for everything shipped here; turn
-pruning off with `.pruning(false)` for a model or score that breaks either. The
+pruning off with `.pruning(false)` for a model or score that breaks either.
+Protection then raycasts every friend instead of trusting the bound. The
 test suite checks branch and bound against a brute-force search in 30 random
 layouts.
 
 `getLastPlaceStats()` and `getLastBreakStats()` say what the last search did —
-cells scanned, bases found, candidates pruned, estimates paid for — for profiling,
-and for seeing why nothing was found.
+cells scanned, bases found, candidates pruned, estimates paid for, spots refused
+for friends or by your filters — for profiling, and for seeing why nothing was
+found.
 
 ### What it reuses from Core
 
 | Need | Core piece |
 |---|---|
 | who the targets are, in range, filtered and sorted | `TargetService` with your `TargetSelector` |
+| who is protected | `TargetService` with a second `TargetSelector` of yours |
 | crystals in break range without scanning every entity | `EntityTracker.forEachWithin`, over Core's `SpatialGrid` |
 | breaking a crystal before the world lists it | `EntityTracker.track` |
 | wall checks | `Rays`, over Core's `VoxelRay` |
@@ -885,8 +977,9 @@ Without `.log(...)`, each search keeps its own, ticked by `.bus(...)` or by
 
 **Your own explosive.** Respawn anchors, or whatever a version adds next, are a
 device of yours: implement `PlaceDevice` and `UseDevice`, then call
-`ExplosiveSearch.findPlace(device)` and `findUse(device)`. Every threshold, the
-branch and bound and the timing come with it. `getEngine()` on either search
+`ExplosiveSearch.findPlace(device)` (or `findPlaces(device, n)`) and
+`findUse(device)`. Every threshold, protection, your filters, the branch and
+bound and the timing come with it. `getEngine()` on either search
 hands you an engine with the same settings.
 
 ---
@@ -1208,15 +1301,15 @@ the profile matches the game.
 | `combat.vector.replay` | `VectorReplay`, `ReplayResult`, `VectorOutcome` | runs a profile against saved explosions |
 | `combat.search` | `CrystalSearch`, `BedSearch` | where to place, what to break or use |
 | `combat.search.engine` | `ExplosiveSearch`, `Device`, `PlaceDevice`, `UseDevice`, `Found`, `SearchStats` | the search every explosive shares, and what each search cost |
-| `combat.search.rule` | `Thresholds`, `Reach`, `ReachPoint`, `Score` | your aura's settings: what is worth doing, how far, how it is ranked |
-| `combat.search.option` | `Option`, `PlaceOption`, `BreakOption`, `BedPlaceOption`, `BedUseOption`, `Trigger` | what the search found, and why |
+| `combat.search.rule` | `Thresholds`, `Reach`, `ReachPoint`, `Score`, `OptionFilter` | your aura's settings: what is worth doing, how far, how it is ranked, and your own last word |
+| `combat.search.option` | `Option`, `PlaceOption`, `BreakOption`, `BedPlaceOption`, `BedUseOption`, `Trigger`, `Proposal`, `Harm` | what the search found and why, and what a filter is shown |
 | `combat.search.timing` | `AttackLog` | inhibit, and what has been dealt this tick, shareable across searches |
 
 ---
 
 ## 10. Verifying
 
-`dev.px.combat.test.CombatSmokeTest` runs **211 checks** in a plain JVM — no
+`dev.px.combat.test.CombatSmokeTest` runs **248 checks** in a plain JVM — no
 Minecraft, no window. The "game" is a few plain classes and a block grid written
 by the tests, with its own version profile written the way a client would, and
 the checks prove the library does what any profile says.
@@ -1236,8 +1329,8 @@ through `testFixtures(project(':core'))`.
 | `CrystalRulesTests` | block shapes and segment tests, including what counts as touching; rays through walls, over and through slabs, from inside a block; uniform grids; exposure in the open, behind a wall, partly covered; a model put together from its rules, with range culling, the formula's minimum, mitigation order and the measure point; placement by clearance, with one or two clear blocks and entities inside, touching and above; the crystal body; `CrystalRules` from a base and from an existing crystal, behind a wall, and builders naming what is missing |
 | `DamageMonitorTests` | a matching model trusted; a wrong formula, wrong armour and wrong exposure each noticed and blamed on the right rule; several explosions in one tick; a health update handled before the explosion; recovering, hidden, untrusted, leaving and out-of-range targets; pops as lower bounds and unexpected pops; one disturbed sample not swaying the verdict; ticking from the bus, closing and clearing |
 | `VectorTests` | target state; block snapshots at negative coordinates, palettes and rebuilding; recording from the monitor, with state, blocks and target, thrown-away samples, same-tick merging and capacity; JSON written and read back equal, other formats and newer versions refused; replaying the right profile from the saved file alone, and a wrong formula, wrong armour and wrong sampling each failing and blamed on the right rule; tolerance; popped vectors |
-| `SearchTests` | placing on a floor of bases with the scan's counts; branch and bound picking what a brute-force search picks in 30 random layouts while pruning most candidates; place range, the nearest-point measure and wall range; minimum damage, the self-damage cap, anti-suicide; lethal, its multiplier and its self-cap override, never for hidden health; faceplacing by health and by keybind, armour breaking; picking the crystal to break, break range, minimum age; inhibit and the one-explosion-per-tick rule across ticks; breaking on spawn; balanced scoring; missing parts, no targets, ticking from the bus |
-| `BedTests` | a bed's cells and equality by position; placement with room, walls, entities on either half, floating, and support under both halves; finding standing beds by their heads; the bed's own cells hiding its explosion, and predictions made with them empty; placing in the Nether, one spot per facing, narrowed facings, nothing in the Overworld; branch and bound against brute force in 20 layouts; using the nearer usable half, head-only versions, use range; inhibit by position; one explosion a tick, across a crystal search and a bed search sharing a log; the monitor and recorder told the bed is gone; builders naming what is missing |
+| `SearchTests` | placing on a floor of bases with the scan's counts; branch and bound picking what a brute-force search picks in 30 random layouts while pruning most candidates; the best few places, ordered, on their own bases, and the best four matching every option in 20 layouts; place range, the nearest-point measure and wall range; minimum damage, the self-damage cap, anti-suicide; lethal, its multiplier and its self-cap override, never for hidden health; faceplacing by health and by keybind, armour breaking; protecting a friend by cap and by margin, never for hidden health, never as a target, before the cut to `maxTargets`, against kills and breaks, cleared by the bound without raycasting, and refusing exactly what raycasting every friend refuses in 20 layouts; filters refusing, seeing the option and exact damage to friends only when asked, in order, on breaks too, choosing the right one of two enemies, and branch and bound staying exact under one in 15 layouts; picking the crystal to break, break range, minimum age; inhibit and the one-explosion-per-tick rule across ticks; breaking on spawn; balanced scoring; missing parts, no targets, ticking from the bus |
+| `BedTests` | a bed's cells and equality by position; the best three beds, ranked; placement with room, walls, entities on either half, floating, and support under both halves; finding standing beds by their heads; the bed's own cells hiding its explosion, and predictions made with them empty; placing in the Nether, one spot per facing, narrowed facings, nothing in the Overworld; branch and bound against brute force in 20 layouts; using the nearer usable half, head-only versions, use range; inhibit by position; one explosion a tick, across a crystal search and a bed search sharing a log; the monitor and recorder told the bed is gone; builders naming what is missing |
 
 ---
 

@@ -16,6 +16,8 @@ import java.util.function.ToDoubleFunction;
  *         .minDamage(minDamage::getDouble)
  *         .maxSelfDamage(maxSelf::getDouble)
  *         .antiSuicide(() -> 0.5)                                // never leave yourself under half a heart
+ *         .maxProtectedDamage(friendMax::getDouble)               // for whoever the search protects
+ *         .protectedMargin(() -> 4)                              // and never leave one of them near death
  *         .lethal(lethalMultiplier::getDouble, true)              // a kill ignores the self-damage cap
  *         .facePlace(faceHealth::getDouble, faceDamage::getDouble)
  *         .facePlaceWhen(faceKey::isDown)
@@ -37,8 +39,14 @@ import java.util.function.ToDoubleFunction;
  *       minimum, when its most worn armour is at or below that durability.
  *   <li><b>Anti-suicide</b>, if on, refuses anything that would leave you within
  *       its margin of death, lethal or not.
+ *   <li><b>Protection</b>, when the search protects anyone: refuses anything that
+ *       hurts one of them more than the protected cap, or leaves one within the
+ *       protected margin of death, lethal or not. The margin needs their health;
+ *       when your {@code Vitals} do not trust it, only the cap protects them.
  *   <li>The <b>self-damage cap</b> refuses anything that hurts you more.
  * </ol>
+ *
+ * <p>Your {@code OptionFilter}s, if any, then have the last word.
  *
  * <p>Everything is off, or unlimited, unless you turn it on: the library has no
  * opinion on how aggressive your aura should be.
@@ -50,6 +58,8 @@ public final class Thresholds<E> {
     private final DoubleSupplier minDamage;
     private final DoubleSupplier maxSelfDamage;
     private final DoubleSupplier antiSuicideMargin;
+    private final DoubleSupplier maxProtectedDamage;
+    private final DoubleSupplier protectedMargin;
     private final DoubleSupplier lethalMultiplier;
     private final BooleanSupplier lethalIgnoresSelfCap;
     private final DoubleSupplier facePlaceHealth;
@@ -65,6 +75,8 @@ public final class Thresholds<E> {
         this.minDamage = builder.minDamage;
         this.maxSelfDamage = builder.maxSelfDamage;
         this.antiSuicideMargin = builder.antiSuicideMargin;
+        this.maxProtectedDamage = builder.maxProtectedDamage;
+        this.protectedMargin = builder.protectedMargin;
         this.lethalMultiplier = builder.lethalMultiplier;
         this.lethalIgnoresSelfCap = builder.lethalIgnoresSelfCap;
         this.facePlaceHealth = builder.facePlaceHealth;
@@ -98,6 +110,16 @@ public final class Thresholds<E> {
     /** @return how close to death an option may leave you; NaN when anti-suicide is off */
     public double antiSuicideMargin() {
         return antiSuicideMargin == null ? Double.NaN : antiSuicideMargin.getAsDouble();
+    }
+
+    /** @return the most damage an option may do to anyone the search protects; infinite when there is no cap */
+    public double maxProtectedDamage() {
+        return maxProtectedDamage.getAsDouble();
+    }
+
+    /** @return how close to death an option may leave anyone the search protects; NaN when off */
+    public double protectedMargin() {
+        return protectedMargin == null ? Double.NaN : protectedMargin.getAsDouble();
     }
 
     /** @return the lethal multiplier; NaN when lethal checks are off */
@@ -152,6 +174,8 @@ public final class Thresholds<E> {
         private DoubleSupplier minDamage = () -> 0d;
         private DoubleSupplier maxSelfDamage = () -> Double.POSITIVE_INFINITY;
         private DoubleSupplier antiSuicideMargin;
+        private DoubleSupplier maxProtectedDamage = () -> Double.POSITIVE_INFINITY;
+        private DoubleSupplier protectedMargin;
         private DoubleSupplier lethalMultiplier;
         private BooleanSupplier lethalIgnoresSelfCap = () -> false;
         private DoubleSupplier facePlaceHealth;
@@ -184,6 +208,27 @@ public final class Thresholds<E> {
          */
         public Builder<E> antiSuicide(DoubleSupplier margin) {
             this.antiSuicideMargin = Validate.notNull(margin, "margin");
+            return this;
+        }
+
+        /**
+         * The most damage any option may do to any one entity the search protects,
+         * lethal or not. Unlimited unless set; protects nobody until the search is
+         * told who, with {@code protect}.
+         */
+        public Builder<E> maxProtectedDamage(DoubleSupplier damage) {
+            this.maxProtectedDamage = Validate.notNull(damage, "damage");
+            return this;
+        }
+
+        /**
+         * Refuses any option that would leave anyone the search protects with
+         * {@code margin} or less of their {@code Vitals} pool, lethal or not. Off
+         * unless set. Their health must be trusted for this to apply; otherwise only
+         * {@link #maxProtectedDamage} protects them.
+         */
+        public Builder<E> protectedMargin(DoubleSupplier margin) {
+            this.protectedMargin = Validate.notNull(margin, "margin");
             return this;
         }
 

@@ -4,8 +4,11 @@ import dev.px.combat.explosion.ExplosionModel;
 import dev.px.combat.explosion.Explosive;
 import dev.px.combat.explosion.rule.Exposure;
 import dev.px.combat.monitor.Vitals;
+import dev.px.combat.search.option.Harm;
 import dev.px.combat.search.option.Option;
+import dev.px.combat.search.option.Proposal;
 import dev.px.combat.search.option.Trigger;
+import dev.px.combat.search.rule.OptionFilter;
 import dev.px.combat.search.rule.Reach;
 import dev.px.combat.search.rule.ReachPoint;
 import dev.px.combat.search.rule.Score;
@@ -22,8 +25,12 @@ import dev.px.core.target.TargetService;
 import dev.px.core.util.Validate;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * The search every explosive shares: where to place one, which one already in
@@ -46,6 +53,7 @@ import java.util.List;
  *         .build();
  *
  * Found<LivingEntity, AnchorSpot> spot = search.findPlace(myAnchorDevice);
+ * List<Found<LivingEntity, AnchorSpot>> ranked = search.findPlaces(myAnchorDevice, 3);
  * }</pre>
  *
  * <h2>Placing</h2>
@@ -59,8 +67,26 @@ import java.util.List;
  *       meet any target's threshold is dropped there.
  *   <li><b>Branch and bound.</b> Spots are tried best bound first, with exact,
  *       raycast estimates; once the best option found scores higher than the next
- *       bound, nothing left can win and the search stops.
+ *       bound, nothing left can win and the search stops. Asked for the best
+ *       {@code n} with {@link #findPlaces}, it stops once the {@code n}th best does.
  * </ol>
+ *
+ * <p>Each spot is offered once, against the target it is best for. The best
+ * {@code n} are alternatives &mdash; somewhere to go when you cannot reach the
+ * first &mdash; not a set to place together: two may overlap.
+ *
+ * <h2>Protecting, and your own filters</h2>
+ *
+ * <p>{@link Settings#protect} names who must not be hurt &mdash; your friends,
+ * say &mdash; with a selector of yours. They are never targets, and once a spot
+ * passes for a target, what it would do to each of them is checked against
+ * {@code Thresholds.maxProtectedDamage} and {@code protectedMargin}. Most of
+ * them are cleared by the same no-ray bound the search uses for targets: only a
+ * protected entity the bound says could be hurt too much is raycast.
+ *
+ * <p>Then each {@link OptionFilter} has the last word on an option about to be
+ * chosen. It sees a {@link Proposal}: the option, and on request what it would
+ * do to everyone protected, raycast once per explosion.
  *
  * <h2>Setting off</h2>
  *
@@ -95,9 +121,13 @@ import java.util.List;
  * one, used           O((T + 1) · S · L)
  * </pre>
  *
+ * <p>Protecting F entities adds O(F) bounds per spot judged, and a raycast
+ * estimate only for those the bound cannot clear, or that a filter asks about.
+ *
  * <p>Pruning assumes damage never falls as exposure rises, and that a
  * {@link Score} never exceeds the damage to the target; turn it off with
  * {@link Settings#pruning(boolean)} for a model or score that breaks either.
+ * Protection then raycasts everyone it protects instead of trusting the bound.
  *
  * <p>Game thread only.
  *
@@ -108,6 +138,7 @@ public final class ExplosiveSearch<E> {
     private final EntityService entities;
     private final TargetService targetService;
     private final TargetSelector<? extends E> selector;
+    private final TargetSelector<? extends E> protectedSelector;
     private final int maxTargets;
     private final Vitals<? super E> vitals;
     private final Thresholds<? super E> thresholds;
@@ -115,6 +146,7 @@ public final class ExplosiveSearch<E> {
     private final Reach useReach;
     private final Score score;
     private final boolean pruning;
+    private final List<OptionFilter<E>> filters;
     private final AttackLog log;
     /** Whether the log was made here, and so is closed here. */
     private final boolean ownsLog;
@@ -126,6 +158,7 @@ public final class ExplosiveSearch<E> {
         this.entities = settings.entities;
         this.targetService = settings.targetService;
         this.selector = settings.selector;
+        this.protectedSelector = settings.protectedSelector;
         this.maxTargets = settings.maxTargets;
         this.vitals = settings.vitals;
         this.thresholds = settings.thresholds;
@@ -133,6 +166,7 @@ public final class ExplosiveSearch<E> {
         this.useReach = settings.useReach;
         this.score = settings.score;
         this.pruning = settings.pruning;
+        this.filters = Collections.unmodifiableList(new ArrayList<>(settings.filters));
         this.ownsLog = settings.log == null;
         if (settings.log != null) {
             this.log = settings.log;
@@ -151,12 +185,25 @@ public final class ExplosiveSearch<E> {
 
     /** @return the best spot to place {@code device}'s explosive now, or null when nowhere is worth it */
     public <S> Found<E, S> findPlace(PlaceDevice<E, S> device) {
+        List<Found<E, S>> best = findPlaces(device, 1);
+        return best.isEmpty() ? null : best.get(0);
+    }
+
+    /**
+     * The best {@code count} spots to place {@code device}'s explosive now, best
+     * first: alternatives for when you cannot act on the first, not spots to fill
+     * together.
+     *
+     * @return at most {@code count} options, one per spot; empty when nowhere is worth it
+     */
+    public <S> List<Found<E, S>> findPlaces(PlaceDevice<E, S> device, int count) {
         Validate.notNull(device, "device");
+        Validate.check(count > 0, "count must be positive");
         SearchStats stats = new SearchStats();
         lastPlace = stats;
         Context context = device.active() ? context() : null;
         if (context == null) {
-            return null;
+            return Collections.emptyList();
         }
         Blast blast = new Blast(device);
         boolean atOnce = device.firesAtOnce();
@@ -199,22 +246,37 @@ public final class ExplosiveSearch<E> {
                 }
             }
         }
-        // Branch and bound: the best possible first, and stop once nothing left can win.
+        // Branch and bound: the best possible first, and stop once nothing left can make the cut.
         candidates.sort((a, b) -> Double.compare(b.best, a.best));
-        Found<E, S> best = null;
+        List<Found<E, S>> best = new ArrayList<>(Math.min(count, candidates.size()));
         for (int i = 0; i < candidates.size(); i++) {
             Candidate<S> candidate = candidates.get(i);
-            if (pruning && best != null && candidate.best < best.getScore()) {
+            if (pruning && best.size() == count && candidate.best < best.get(count - 1).getScore()) {
                 stats.pruned += candidates.size() - i;
                 break;
             }
             Found<E, S> option = judgeAll(candidate.spot, candidate.origin, device.blocksWhenFired(candidate.spot),
                     blast, candidate.bounds, atOnce, context, stats);
-            if (option != null && option.beats(best)) {
-                best = option;
+            if (option != null) {
+                keep(best, option, count);
             }
         }
-        return best;
+        return Collections.unmodifiableList(best);
+    }
+
+    /** Puts {@code option} in its place among the best {@code count}, best first; an equal one stays behind. */
+    private static <O extends Option<?>> void keep(List<O> best, O option, int count) {
+        if (best.size() == count && !option.beats(best.get(count - 1))) {
+            return;
+        }
+        int at = best.size();
+        while (at > 0 && option.beats(best.get(at - 1))) {
+            at--;
+        }
+        best.add(at, option);
+        if (best.size() > count) {
+            best.remove(count);
+        }
     }
 
     /** The most each target could take from a spot: no rays. Null when none could reach its threshold. */
@@ -357,6 +419,7 @@ public final class ExplosiveSearch<E> {
     private <T> Found<E, T> judgeAll(T subject, Vec3 origin, BlockView world, Blast blast, double[] bounds,
                                      boolean counted, Context context, SearchStats stats) {
         double self = Double.NaN;
+        Harms harms = null;
         Found<E, T> best = null;
         for (int t = 0; t < context.targets.size(); t++) {
             TargetInfo<E> info = context.targets.get(t);
@@ -379,16 +442,40 @@ public final class ExplosiveSearch<E> {
                 if (context.suicidal(self)) {
                     return null;                 // too dangerous for anyone
                 }
+                harms = new Harms(origin, world, blast, context, stats);
+                if (harms.endangers()) {
+                    stats.endangering++;
+                    return null;                 // whoever it is for, it hurts someone protected
+                }
             }
             if (!context.selfAllows(self, trigger)) {
                 continue;
             }
             double value = score.score(damage, self);
-            if (better(value, self, best)) {
-                best = new Found<>(subject, origin, info.target, damage, self, value, trigger);
+            if (!better(value, self, best)) {
+                continue;
+            }
+            Found<E, T> option = new Found<>(subject, origin, info.target, damage, self, value, trigger);
+            if (accepted(option, harms, stats)) {
+                best = option;
             }
         }
         return best;
+    }
+
+    /** @return whether every filter takes {@code option} */
+    private boolean accepted(Option<E> option, Harms harms, SearchStats stats) {
+        if (filters.isEmpty()) {
+            return true;
+        }
+        Proposal<E> proposal = new Proposal<>(option, harms);
+        for (OptionFilter<E> filter : filters) {
+            if (!filter.accepts(proposal)) {
+                stats.filtered++;
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -429,13 +516,29 @@ public final class ExplosiveSearch<E> {
         return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
-    /** Everything a search reads once: you, the targets and their thresholds. Null when there is nothing to do. */
+    /**
+     * Everything a search reads once: you, the targets and their thresholds, and
+     * who is protected. Null when there is nothing to do.
+     */
     private Context context() {
         Tracked<? extends E> self = entities.<E>getSelf();
         if (self == null) {
             return null;
         }
-        List<Tracked<? extends E>> targets = collect(selector);
+        List<Tracked<? extends E>> guarded = protectedSelector == null
+                ? Collections.<Tracked<? extends E>>emptyList() : collect(protectedSelector, Integer.MAX_VALUE);
+        List<Tracked<? extends E>> targets = collect(selector, guarded.isEmpty() ? maxTargets : Integer.MAX_VALUE);
+        if (!guarded.isEmpty()) {
+            // The protected are never targets, whatever the selectors say; the cut to maxTargets comes after.
+            Map<Object, Boolean> isGuarded = new IdentityHashMap<>();
+            for (Tracked<? extends E> entity : guarded) {
+                isGuarded.put(entity.get(), Boolean.TRUE);
+            }
+            targets.removeIf(target -> isGuarded.containsKey(target.get()));
+            if (targets.size() > maxTargets) {
+                targets.subList(maxTargets, targets.size()).clear();
+            }
+        }
         if (targets.isEmpty()) {
             return null;
         }
@@ -443,11 +546,15 @@ public final class ExplosiveSearch<E> {
         for (Tracked<? extends E> target : targets) {
             infos.add(new TargetInfo<>(target, vitals, thresholds));
         }
-        return new Context(self, infos);
+        List<Guard<E>> guards = new ArrayList<>(guarded.size());
+        for (Tracked<? extends E> entity : guarded) {
+            guards.add(new Guard<>(entity, vitals));
+        }
+        return new Context(self, infos, guards);
     }
 
-    private <T extends E> List<Tracked<? extends E>> collect(TargetSelector<T> chosen) {
-        return new ArrayList<Tracked<? extends E>>(targetService.all(chosen, maxTargets));
+    private <T extends E> List<Tracked<? extends E>> collect(TargetSelector<T> chosen, int limit) {
+        return new ArrayList<Tracked<? extends E>>(targetService.all(chosen, limit));
     }
 
     private static int floor(double value) {
@@ -510,21 +617,44 @@ public final class ExplosiveSearch<E> {
         }
     }
 
-    /** You, and what you can survive. */
+    /** One protected entity, and what it can take; its pool is NaN when your {@code Vitals} do not trust it. */
+    private static final class Guard<E> {
+        final Tracked<? extends E> entity;
+        final double pool;
+
+        Guard(Tracked<? extends E> entity, Vitals<? super E> vitals) {
+            this.entity = entity;
+            E handle = entity.get();
+            this.pool = vitals.isTrusted(handle) ? vitals.pool(handle) : Double.NaN;
+        }
+    }
+
+    /** You, what you can survive, and who must not be hurt. */
     private final class Context {
         final Tracked<? extends E> self;
         final List<TargetInfo<E>> targets;
+        final List<Guard<E>> guards;
         /** Self damage at or past which an option is suicide; infinite when anti-suicide is off. */
         final double suicide;
         final double selfCap;
+        final double protectedCap;
+        /** NaN when off. */
+        final double protectedMargin;
+        /** Whether any protection threshold is on, so there is anything to check. */
+        final boolean guarding;
 
-        Context(Tracked<? extends E> self, List<TargetInfo<E>> targets) {
+        Context(Tracked<? extends E> self, List<TargetInfo<E>> targets, List<Guard<E>> guards) {
             this.self = self;
             this.targets = Collections.unmodifiableList(targets);
+            this.guards = Collections.unmodifiableList(guards);
             double margin = thresholds.antiSuicideMargin();
             double pool = vitals.pool(self.get());
             this.suicide = Double.isNaN(margin) || Double.isNaN(pool) ? Double.POSITIVE_INFINITY : pool - margin;
             this.selfCap = thresholds.maxSelfDamage();
+            this.protectedCap = thresholds.maxProtectedDamage();
+            this.protectedMargin = thresholds.protectedMargin();
+            this.guarding = !guards.isEmpty()
+                    && (protectedCap < Double.POSITIVE_INFINITY || !Double.isNaN(protectedMargin));
         }
 
         boolean suicidal(double selfDamage) {
@@ -533,6 +663,88 @@ public final class ExplosiveSearch<E> {
 
         boolean selfAllows(double selfDamage, Trigger trigger) {
             return selfDamage <= selfCap || (trigger == Trigger.LETHAL && thresholds.lethalIgnoresSelfCap());
+        }
+
+        /** @return whether {@code damage} to {@code guard} is more than the protection thresholds allow */
+        boolean endangers(Guard<E> guard, double damage) {
+            return damage > protectedCap
+                    || (!Double.isNaN(protectedMargin) && !Double.isNaN(guard.pool) && damage >= guard.pool - protectedMargin);
+        }
+    }
+
+    /**
+     * What one explosion does to each protected entity, worked out only as far as
+     * asked: by the protection thresholds, then by a filter's {@link Proposal}.
+     */
+    private final class Harms implements Supplier<List<Harm<E>>> {
+        private final Vec3 origin;
+        private final BlockView world;
+        private final Blast blast;
+        private final Context context;
+        private final SearchStats stats;
+        /** Exact damage to each guard; NaN until worked out. */
+        private final double[] damage;
+        private List<Harm<E>> harmed;
+
+        Harms(Vec3 origin, BlockView world, Blast blast, Context context, SearchStats stats) {
+            this.origin = origin;
+            this.world = world;
+            this.blast = blast;
+            this.context = context;
+            this.stats = stats;
+            this.damage = new double[context.guards.size()];
+            Arrays.fill(damage, Double.NaN);
+        }
+
+        /** @return whether it hurts anyone protected more than the thresholds allow */
+        boolean endangers() {
+            if (!context.guarding) {
+                return false;
+            }
+            for (int g = 0; g < damage.length; g++) {
+                Guard<E> guard = context.guards.get(g);
+                // The bound costs no rays and is never less than the damage: only a guard it cannot clear is raycast.
+                if (pruning && !context.endangers(guard, bound(guard))) {
+                    continue;
+                }
+                if (context.endangers(guard, damage(g))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public List<Harm<E>> get() {
+            if (harmed == null) {
+                List<Harm<E>> list = new ArrayList<>();
+                for (int g = 0; g < damage.length; g++) {
+                    Guard<E> guard = context.guards.get(g);
+                    double dealt = damage(g);
+                    if (dealt > 0d) {
+                        list.add(new Harm<E>(guard.entity, dealt, guard.pool));
+                    }
+                }
+                harmed = Collections.unmodifiableList(list);
+            }
+            return harmed;
+        }
+
+        private double bound(Guard<E> guard) {
+            return blast.bound.damage(origin, blast.explosive, guard.entity, BlockView.EMPTY);
+        }
+
+        private double damage(int g) {
+            if (Double.isNaN(damage[g])) {
+                Guard<E> guard = context.guards.get(g);
+                if (pruning && bound(guard) <= 0d) {
+                    damage[g] = 0d;              // out of reach: nothing to raycast
+                } else {
+                    stats.protectedEvaluated++;
+                    damage[g] = blast.model.damage(origin, blast.explosive, guard.entity, world);
+                }
+            }
+            return damage[g];
         }
     }
 
@@ -555,8 +767,10 @@ public final class ExplosiveSearch<E> {
         private Thresholds<? super E> thresholds;
         private Reach placeReach;
         private Reach useReach;
+        private TargetSelector<? extends E> protectedSelector;
         private Score score = Score.DAMAGE;
         private boolean pruning = true;
+        private final List<OptionFilter<E>> filters = new ArrayList<>();
         private EventBus bus;
         private AttackLog log;
 
@@ -576,6 +790,28 @@ public final class ExplosiveSearch<E> {
         public B targets(TargetService service, TargetSelector<? extends E> selector) {
             this.targetService = Validate.notNull(service, "service");
             this.selector = Validate.notNull(selector, "selector");
+            return self();
+        }
+
+        /**
+         * Optional: who must not be hurt &mdash; your friends, say &mdash; chosen by a
+         * selector of yours, from the {@link #targets} service. They are never targets,
+         * even when the target selector would pick them, and
+         * {@code Thresholds.maxProtectedDamage} and {@code protectedMargin} limit what
+         * an option may do to them. Give it range enough to cover everywhere your
+         * explosions reach: your place range plus your {@code Falloff}'s range.
+         */
+        public B protect(TargetSelector<? extends E> selector) {
+            this.protectedSelector = Validate.notNull(selector, "selector");
+            return self();
+        }
+
+        /**
+         * Optional: refuses any option {@code filter} does not accept, after every
+         * threshold. Several are all required, asked in the order given.
+         */
+        public B filter(OptionFilter<E> filter) {
+            this.filters.add(Validate.notNull(filter, "filter"));
             return self();
         }
 

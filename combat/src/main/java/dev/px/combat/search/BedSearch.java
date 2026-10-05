@@ -21,7 +21,9 @@ import dev.px.core.math.Vec3;
 import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -104,6 +106,21 @@ public final class BedSearch<E> {
     public BedPlaceOption<E> findPlace() {
         Found<E, Bed> found = engine.findPlace(placing);
         return found == null ? null : new BedPlaceOption<>(found.getSubject(), found);
+    }
+
+    /**
+     * The best {@code count} places to put a bed and set it off now, best first:
+     * alternatives for when you cannot act on the first, not beds to place together.
+     *
+     * @return at most {@code count} options, one per cell and facing; empty when nowhere is worth it
+     */
+    public List<BedPlaceOption<E>> findPlaces(int count) {
+        List<Found<E, Bed>> found = engine.findPlaces(placing, count);
+        List<BedPlaceOption<E>> places = new ArrayList<>(found.size());
+        for (Found<E, Bed> option : found) {
+            places.add(new BedPlaceOption<>(option.getSubject(), option));
+        }
+        return places;
     }
 
     /** @return the best bed already in the world to use now, or null when none is worth it */

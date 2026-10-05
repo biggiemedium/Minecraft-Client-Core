@@ -13,8 +13,11 @@ import dev.px.combat.monitor.Vitals;
 import dev.px.combat.search.CrystalSearch;
 import dev.px.combat.search.engine.SearchStats;
 import dev.px.combat.search.option.BreakOption;
+import dev.px.combat.search.option.Harm;
 import dev.px.combat.search.option.PlaceOption;
+import dev.px.combat.search.option.Proposal;
 import dev.px.combat.search.option.Trigger;
+import dev.px.combat.search.rule.OptionFilter;
 import dev.px.combat.search.rule.Reach;
 import dev.px.combat.search.rule.ReachPoint;
 import dev.px.combat.search.rule.Score;
@@ -29,6 +32,7 @@ import dev.px.core.entity.Tracked;
 import dev.px.core.event.Stage;
 import dev.px.core.event.bus.CoreEventBus;
 import dev.px.core.event.impl.TickEvent;
+import dev.px.core.math.Vec3;
 import dev.px.core.target.TargetSelector;
 import dev.px.core.target.TargetService;
 import dev.px.core.test.harness.Checks;
@@ -44,8 +48,9 @@ import java.util.Set;
 import java.util.function.Function;
 
 /**
- * The crystal search: placing and breaking, every threshold, reach, timing, and
- * branch and bound checked against a brute-force search of the same world.
+ * The crystal search: placing and breaking, the best few places, every
+ * threshold, protecting friends, your own filters, reach, timing, and branch and
+ * bound checked against a brute-force search of the same world.
  *
  * <p>The world is a floor of crystal bases with you, an enemy, and crystals on
  * it, behind Core's own entity and targeting services. The version profile is the
@@ -68,10 +73,15 @@ public final class SearchTests {
 
         placing();
         bruteForce();
+        ranked();
+        rankedBruteForce();
         reach();
         thresholds();
         lethal();
         facePlaceAndArmour();
+        protecting();
+        protectingBruteForce();
+        filters();
         breaking();
         timing();
         spawning();
@@ -139,6 +149,57 @@ public final class SearchTests {
                 layouts, agree);
         Checks.check("while skipping most candidates (" + pruned + " pruned, " + savedEstimates + " estimates saved)",
                 pruned > layouts * 10 && savedEstimates > 0);
+    }
+
+    private static void ranked() {
+        Arena arena = new Arena();
+        CrystalSearch<Fighter> search = arena.search(b -> b);
+        PlaceOption<Fighter> best = search.findPlace();
+        List<PlaceOption<Fighter>> five = search.findPlaces(5);
+        Checks.check("the best five places are five", five.size() == 5);
+        Checks.check("the first is what findPlace finds",
+                same(five.get(0), best) && five.get(0).getX() == best.getX() && five.get(0).getZ() == best.getZ());
+        boolean ordered = true;
+        Set<Long> bases = new HashSet<>();
+        for (int i = 0; i < five.size(); i++) {
+            PlaceOption<Fighter> option = five.get(i);
+            bases.add(Blocks.key(option.getX(), option.getY(), option.getZ()));
+            if (i > 0 && option.beats(five.get(i - 1))) {
+                ordered = false;
+            }
+        }
+        Checks.check("best first, each on its own base (" + five + ")", ordered && bases.size() == 5);
+        int one = search.getLastPlaceStats().getEvaluated();
+        search.findPlace();
+        Checks.check("asking for more estimates more: pruning waits for the fifth best",
+                one > search.getLastPlaceStats().getEvaluated());
+
+        Thresholds<Fighter> strict = Thresholds.<Fighter>builder().minDamage(() -> 1000).build();
+        Checks.check("nowhere worth it is an empty list", arena.search(b -> b.thresholds(strict)).findPlaces(3).isEmpty());
+        Checks.checkThrows("and a count below one is refused", IllegalArgumentException.class, () -> search.findPlaces(0));
+    }
+
+    private static void rankedBruteForce() {
+        Random random = new Random(11);
+        int agree = 0;
+        int pruned = 0;
+        int layouts = 20;
+        for (int layout = 0; layout < layouts; layout++) {
+            Arena arena = randomArena(random);
+            Thresholds<Fighter> limits = Thresholds.<Fighter>builder().minDamage(() -> 4).maxSelfDamage(() -> 30).build();
+            CrystalSearch<Fighter> fast = arena.search(b -> b.thresholds(limits));
+            CrystalSearch<Fighter> slow = arena.search(b -> b.thresholds(limits).pruning(false));
+            List<PlaceOption<Fighter>> a = fast.findPlaces(4);
+            List<PlaceOption<Fighter>> everything = slow.findPlaces(10000);
+            List<PlaceOption<Fighter>> b = everything.subList(0, Math.min(4, everything.size()));
+            if (sameRanking(a, b)) {
+                agree++;
+            }
+            pruned += fast.getLastPlaceStats().getPruned();
+        }
+        Checks.checkEquals("the best four by branch and bound are the best four of every option, in all 20 layouts",
+                layouts, agree);
+        Checks.check("while still skipping spots (" + pruned + " pruned)", pruned > layouts * 5);
     }
 
     private static void reach() {
@@ -248,6 +309,272 @@ public final class SearchTests {
         Checks.check("worn armour lowers the minimum too", breaking != null && breaking.getTrigger() == Trigger.ARMOUR_BREAK);
         arena.enemy.wear = 0.9;
         Checks.check("not for armour in good shape", arena.search(b -> b.thresholds(armour)).findPlace() == null);
+    }
+
+    // ------------------------------------------------------------ protecting
+
+    private static void protecting() {
+        Arena arena = new Arena();
+        Fighter friend = arena.world.add(new Fighter(3.5, 1, 2.5));     // two blocks from the enemy
+        arena.refresh();
+        Tracked<Fighter> friendly = arena.players.get(friend);
+        TargetSelector<Fighter> friends = TargetSelector.from(arena.players).range(20).where(f -> f == friend).build();
+
+        PlaceOption<Fighter> free = arena.search(b -> b).findPlace();
+        double freeHarm = arena.rules.damage(free.getX(), free.getY(), free.getZ(), friendly);
+        Checks.check("(unprotected, the best place hurts the friend: " + freeHarm + ")", freeHarm > 5);
+
+        double cap = freeHarm / 2;
+        Thresholds<Fighter> capped = Thresholds.<Fighter>builder().maxProtectedDamage(() -> cap).build();
+        CrystalSearch<Fighter> careful = arena.search(b -> b.protect(friends).thresholds(capped));
+        PlaceOption<Fighter> safe = careful.findPlace();
+        double safeHarm = arena.rules.damage(safe.getX(), safe.getY(), safe.getZ(), friendly);
+        Checks.check("the protected cap is kept, at the cost of damage (" + safeHarm + ", " + careful.getLastPlaceStats() + ")",
+                safeHarm <= cap && safe.getDamage() < free.getDamage() && safe.getTarget().get() == arena.enemy
+                        && careful.getLastPlaceStats().getEndangering() > 0);
+        Checks.check("and nothing is refused before a friend is named", arena.search(b -> b.thresholds(capped))
+                .findPlace().getDamage() == free.getDamage());
+
+        friend.health = cap + 4;
+        Thresholds<Fighter> margin = Thresholds.<Fighter>builder().protectedMargin(() -> 4).build();
+        PlaceOption<Fighter> spared = arena.search(b -> b.protect(friends).thresholds(margin)).findPlace();
+        double sparedHarm = arena.rules.damage(spared.getX(), spared.getY(), spared.getZ(), friendly);
+        Checks.check("the protected margin never leaves a friend near death (" + sparedHarm + ")",
+                sparedHarm < cap && spared.getDamage() < free.getDamage());
+        friend.trusted = false;
+        PlaceOption<Fighter> hidden = arena.search(b -> b.protect(friends).thresholds(margin)).findPlace();
+        Checks.check("a friend whose health is hidden gets no margin: only the cap protects them",
+                hidden.getDamage() == free.getDamage());
+        friend.trusted = true;
+
+        arena.enemy.health = 3;
+        Thresholds<Fighter> killing = Thresholds.<Fighter>builder().minDamage(() -> 1000).lethal(() -> 1, true)
+                .maxProtectedDamage(() -> cap).build();
+        PlaceOption<Fighter> kill = arena.search(b -> b.protect(friends).thresholds(killing)).findPlace();
+        Checks.check("not even a kill may hurt a friend past the cap",
+                kill != null && kill.getTrigger() == Trigger.LETHAL
+                        && arena.rules.damage(kill.getX(), kill.getY(), kill.getZ(), friendly) <= cap);
+        arena.enemy.health = 36;
+
+        arena.world.fighters.remove(arena.enemy);
+        arena.refresh();
+        Checks.check("a friend is never a target, though the target selector would pick them",
+                arena.search(b -> b).findPlace().getTarget().get() == friend
+                        && arena.search(b -> b.protect(friends)).findPlace() == null);
+        arena.world.fighters.add(arena.enemy);
+
+        Fighter between = arena.world.add(new Fighter(1.5, 1, 0.5));    // nearer you than the enemy
+        arena.refresh();
+        TargetSelector<Fighter> near = TargetSelector.from(arena.players).range(20).where(f -> f == between).build();
+        PlaceOption<Fighter> first = arena.search(b -> b.maxTargets(1).protect(near)).findPlace();
+        Checks.check("friends are left out before the cut to maxTargets, so the nearest enemy still counts",
+                first != null && first.getTarget().get() != between);
+        arena.world.fighters.remove(between);
+        arena.refresh();
+
+        CrystalSearch<Fighter> loose = arena.search(b -> b.protect(friends).thresholds(Thresholds.<Fighter>builder()
+                .maxProtectedDamage(() -> 1000).build()));
+        loose.findPlace();
+        Checks.check("a friend the no-ray bound clears is never raycast (" + loose.getLastPlaceStats() + ")",
+                loose.getLastPlaceStats().getProtectedEvaluated() == 0);
+        friend.x = 60;
+        arena.refresh();
+        CrystalSearch<Fighter> distant = arena.search(b -> b.protect(friends).thresholds(capped));
+        distant.findPlace();
+        Checks.check("nor one out of every explosion's reach", distant.getLastPlaceStats().getProtectedEvaluated() == 0);
+        friend.x = 3.5;
+        arena.refresh();
+
+        Crystal crystal = arena.crystal(3, 0, 1);                       // between the enemy and the friend
+        arena.refresh();
+        Checks.check("breaking protects them too",
+                arena.search(b -> b.protect(friends)).findBreak() != null
+                        && arena.search(b -> b.protect(friends).thresholds(capped)).findBreak() == null
+                        && crystal != null);
+    }
+
+    private static void protectingBruteForce() {
+        Random random = new Random(23);
+        int agree = 0;
+        int cleared = 0;
+        int layouts = 20;
+        for (int layout = 0; layout < layouts; layout++) {
+            Arena arena = randomArena(random);
+            Fighter friend = arena.world.add(new Fighter(random.nextInt(9) - 4 + 0.5, 1, random.nextInt(9) - 4 + 0.5));
+            arena.refresh();
+            TargetSelector<Fighter> friends = TargetSelector.from(arena.players).range(30).where(f -> f == friend).build();
+            Thresholds<Fighter> limits = Thresholds.<Fighter>builder().minDamage(() -> 4)
+                    .maxProtectedDamage(() -> 12).build();
+            CrystalSearch<Fighter> fast = arena.search(b -> b.protect(friends).thresholds(limits));
+            CrystalSearch<Fighter> slow = arena.search(b -> b.protect(friends).thresholds(limits).pruning(false));
+            if (sameRanking(fast.findPlaces(3), slow.findPlaces(3))) {
+                agree++;
+            }
+            cleared += slow.getLastPlaceStats().getProtectedEvaluated() - fast.getLastPlaceStats().getProtectedEvaluated();
+        }
+        Checks.checkEquals("protection by bound refuses exactly what raycasting every friend refuses, in all 20 layouts",
+                layouts, agree);
+        Checks.check("while raycasting friends far less (" + cleared + " estimates saved)", cleared > layouts);
+    }
+
+    private static void filters() {
+        Arena arena = new Arena();
+        CrystalSearch<Fighter> plain = arena.search(b -> b);
+        List<PlaceOption<Fighter>> ranked = plain.findPlaces(2);
+        PlaceOption<Fighter> best = ranked.get(0);
+
+        CrystalSearch<Fighter> none = arena.search(b -> b.filter(p -> false));
+        Checks.check("a filter refusing everything finds nothing, and says so",
+                none.findPlace() == null && none.getLastPlaceStats().getFiltered() > 0);
+
+        List<Proposal<Fighter>> seen = new ArrayList<>();
+        arena.search(b -> b.filter(p -> seen.add(p))).findPlace();
+        boolean honest = !seen.isEmpty();
+        for (Proposal<Fighter> p : seen) {
+            honest &= p.getTarget().get() == arena.enemy && p.getDamage() > 0 && p.getTrigger() == Trigger.MINIMUM
+                    && p.getScore() == p.getDamage() && p.getProtected().isEmpty() && p.getMostProtectedDamage() == 0;
+        }
+        Checks.check("it sees the target, the damage to them and to you, and why (" + seen.size() + " asked)", honest);
+        Checks.check("only about options that would be chosen: a handful, not every spot",
+                seen.size() < plain.getLastPlaceStats().getViable());
+
+        CrystalSearch<Fighter> notThere = arena.search(b -> b.filter(p -> !p.getOrigin().equals(best.getOrigin())));
+        PlaceOption<Fighter> second = notThere.findPlace();
+        Checks.check("refusing the best place gives the next best",
+                second != null && second.getX() == ranked.get(1).getX() && second.getZ() == ranked.get(1).getZ()
+                        && same(second, ranked.get(1)));
+        Checks.check("and the best few all pass it", !containsOrigin(notThere.findPlaces(3), best.getOrigin()));
+
+        boolean[] askedSecond = { false };
+        arena.search(b -> b.filter(p -> false).filter(p -> askedSecond[0] = true)).findPlace();
+        Checks.check("several filters are all required, in order: a refusal stops the rest", !askedSecond[0]);
+
+        Fighter friend = arena.world.add(new Fighter(3.5, 1, 2.5));
+        arena.refresh();
+        Tracked<Fighter> friendly = arena.players.get(friend);
+        TargetSelector<Fighter> friends = TargetSelector.from(arena.players).range(20).where(f -> f == friend).build();
+        CrystalSearch<Fighter> lazy = arena.search(b -> b.protect(friends).filter(p -> p.getDamage() > 0));
+        lazy.findPlace();
+        Checks.check("damage to friends is not worked out unless a filter asks",
+                lazy.getLastPlaceStats().getProtectedEvaluated() == 0);
+
+        List<Harm<Fighter>> harms = new ArrayList<>();
+        Vec3[] where = new Vec3[1];
+        CrystalSearch<Fighter> asking = arena.search(b -> b.protect(friends).filter(p -> {
+            harms.clear();
+            harms.addAll(p.getProtected());
+            where[0] = p.getOrigin();
+            return true;
+        }));
+        PlaceOption<Fighter> chosen = asking.findPlace();
+        double expected = arena.rules.damage(chosen.getX(), chosen.getY(), chosen.getZ(), friendly);
+        Checks.check("asked, it is exact: what the explosion does to each friend (" + harms + ")",
+                where[0].equals(chosen.getOrigin()) && harms.size() == 1 && harms.get(0).getEntity().get() == friend
+                        && harms.get(0).getDamage() == expected && harms.get(0).getPool() == friend.health
+                        && asking.getLastPlaceStats().getProtectedEvaluated() > 0);
+
+        CrystalSearch<Fighter> gentle = arena.search(b -> b.protect(friends)
+                .filter(p -> p.getMostProtectedDamage() < p.getDamage() * 0.8));
+        PlaceOption<Fighter> kind = gentle.findPlace();
+        Checks.check("so a filter can weigh friends against the target (" + kind + " over " + chosen + ")", kind != null
+                && arena.rules.damage(kind.getX(), kind.getY(), kind.getZ(), friendly) < kind.getDamage() * 0.8
+                && expected >= chosen.getDamage() * 0.8);
+
+        friend.x = 60;
+        arena.refresh();
+        List<Harm<Fighter>> far = new ArrayList<>();
+        arena.search(b -> b.protect(TargetSelector.from(arena.players).where(f -> f == friend).build())
+                .filter(p -> far.addAll(p.getProtected()) || true)).findPlace();
+        Checks.check("a friend out of the explosion's reach is not among those it would hurt", far.isEmpty());
+        friend.x = 3.5;
+        arena.world.fighters.remove(friend);
+
+        Fighter other = arena.world.add(new Fighter(-5.5, 1, 0.5));      // a second enemy, further off the other side
+        arena.refresh();
+        List<PlaceOption<Fighter>> unfiltered = arena.search(b -> b).findPlaces(6);
+        List<PlaceOption<Fighter>> passed = arena.search(b -> b.filter(p -> true)).findPlaces(6);
+        boolean sameTargets = unfiltered.size() == passed.size();
+        for (int i = 0; sameTargets && i < passed.size(); i++) {
+            sameTargets = passed.get(i).getTarget().get() == unfiltered.get(i).getTarget().get();
+        }
+        Checks.check("a filter that accepts everything changes nothing, with two enemies to choose between",
+                sameRanking(unfiltered, passed) && sameTargets);
+        boolean bestTarget = !passed.isEmpty();
+        for (PlaceOption<Fighter> option : passed) {
+            for (Tracked<Fighter> enemy : arena.players.getAll()) {
+                bestTarget &= option.getDamage() >= arena.rules.damage(option.getX(), option.getY(), option.getZ(), enemy);
+            }
+        }
+        Checks.check("and each place is offered against the enemy it hurts most", bestTarget);
+        Checks.check("so the best place is still the first enemy's best, though the second is weighed after",
+                passed.get(0).getTarget().get() == arena.enemy && same(passed.get(0), best));
+        arena.world.fighters.remove(other);
+        arena.refresh();
+
+        arena.crystal(2, 0, 0);
+        arena.refresh();
+        Checks.check("filters judge breaking too",
+                arena.search(b -> b).findBreak() != null && arena.search(b -> b.filter(p -> false)).findBreak() == null);
+
+        Random random = new Random(31);
+        int agree = 0;
+        for (int layout = 0; layout < 15; layout++) {
+            Arena world = randomArena(random);
+            OptionFilter<Fighter> oddOnly = p -> Math.floor(p.getOrigin().getX()) % 2 != 0;
+            Thresholds<Fighter> limits = Thresholds.<Fighter>builder().minDamage(() -> 4).build();
+            List<PlaceOption<Fighter>> a = world.search(b -> b.thresholds(limits).filter(oddOnly)).findPlaces(3);
+            List<PlaceOption<Fighter>> c = world.search(b -> b.thresholds(limits).filter(oddOnly).pruning(false)).findPlaces(3);
+            if (sameRanking(a, c)) {
+                agree++;
+            }
+        }
+        Checks.checkEquals("branch and bound stays exact under a filter, in all 15 layouts", 15, agree);
+    }
+
+    private static boolean same(PlaceOption<Fighter> a, PlaceOption<Fighter> b) {
+        return a.getScore() == b.getScore() && a.getSelfDamage() == b.getSelfDamage() && a.getDamage() == b.getDamage();
+    }
+
+    /** Equal scores in the same order; spots that tie may come in either order, so only the numbers count. */
+    private static boolean sameRanking(List<PlaceOption<Fighter>> a, List<PlaceOption<Fighter>> b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (int i = 0; i < a.size(); i++) {
+            if (a.get(i).getScore() != b.get(i).getScore() || a.get(i).getSelfDamage() != b.get(i).getSelfDamage()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean containsOrigin(List<PlaceOption<Fighter>> options, Vec3 origin) {
+        for (PlaceOption<Fighter> option : options) {
+            if (option.getOrigin().equals(origin)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The arena with the enemy somewhere random and a few walls and slabs about. */
+    private static Arena randomArena(Random random) {
+        Arena arena = new Arena();
+        arena.enemy.x = random.nextInt(9) - 4 + 0.5;
+        arena.enemy.z = random.nextInt(9) - 4 + 0.5;
+        if (arena.enemy.x == 0.5 && arena.enemy.z == 0.5) {
+            arena.enemy.x = 3.5;
+        }
+        for (int wall = 0; wall < 6; wall++) {
+            int x = random.nextInt(11) - 5;
+            int z = random.nextInt(11) - 5;
+            for (int y = 1; y < 3; y++) {
+                arena.blocks.set(x, y, z, random.nextBoolean() ? BlockShape.FULL
+                        : BlockShape.of(dev.px.core.math.Box.of(0, 0, 0, 1, 0.5, 1)));
+            }
+        }
+        arena.refresh();
+        return arena;
     }
 
     // -------------------------------------------------------------- breaking

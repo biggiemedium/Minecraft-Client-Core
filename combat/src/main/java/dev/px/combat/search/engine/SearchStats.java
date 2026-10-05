@@ -22,6 +22,9 @@ public final class SearchStats {
     int pruned;
     int evaluated;
     int selfEvaluated;
+    int protectedEvaluated;
+    int endangering;
+    int filtered;
     int existing;
     int inhibited;
     int tooYoung;
@@ -74,6 +77,21 @@ public final class SearchStats {
         return selfEvaluated;
     }
 
+    /** @return exact damage estimates against entities the search protects */
+    public int getProtectedEvaluated() {
+        return protectedEvaluated;
+    }
+
+    /** @return spots or explosives refused because they would hurt someone protected too much */
+    public int getEndangering() {
+        return endangering;
+    }
+
+    /** @return options your {@code OptionFilter}s refused */
+    public int getFiltered() {
+        return filtered;
+    }
+
     /** @return explosives already in the world the search looked at: crystals, beds */
     public int getExisting() {
         return existing;
@@ -93,8 +111,9 @@ public final class SearchStats {
     public String toString() {
         return String.format(Locale.ROOT,
                 "SearchStats(cells %d, in reach %d, placeable %d, visible %d, viable %d, pruned %d, "
-                        + "estimates %d + %d self, existing %d, inhibited %d, too young %d)",
-                cells, inReach, placeable, visible, viable, pruned, evaluated, selfEvaluated,
-                existing, inhibited, tooYoung);
+                        + "estimates %d + %d self + %d protected, endangering %d, filtered %d, "
+                        + "existing %d, inhibited %d, too young %d)",
+                cells, inReach, placeable, visible, viable, pruned, evaluated, selfEvaluated, protectedEvaluated,
+                endangering, filtered, existing, inhibited, tooYoung);
     }
 }
