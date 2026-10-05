@@ -30,6 +30,7 @@ core.getThemeService().register(Theme.of("Froggy", Color.rgb(0xADF773), Color.rg
 core.getModuleRegistry().registerAll(new KillAura(), new Sprint(), new Fullbright());
 core.getCommandRegistry().registerAll(new ToggleCommand());
 core.getHudService().registerAll(new WatermarkElement(), new ClockElement());
+core.getEntityService().registerAll(new LivingTracker(), new CrystalTracker());   // §12
 
 Render.install(new NanoVGRender2D());       // your 2D library
 Render.install(new LegacyRender3D());       // world-space drawing
@@ -64,6 +65,87 @@ public enum Categories implements Category {
 }
 ```
 
+### Config: where everything is saved
+
+`start()` loads the saved config and `stop()` saves it. Each **section** —
+modules, HUD, GUI windows, theme, friends, accounts, and any of yours — is its
+own JSON file, in every profile or shared by all of them:
+
+```
+configs/                          setDirectory(...), under Platform.getDataDirectory()
+  profiles/                       setProfilesFolder(...)
+    default/
+      modules.json
+      hud.json
+      myclient/waypoints.json     a section of yours, in a folder of its own
+    hypixel/...
+  shared/                         setSharedFolder(...): the same for every profile
+    accounts.enc                  encrypted, because you asked
+    friends.json
+    profile.json                  which profile was active last
+```
+
+The layout is yours. Name the folders before `start()`, put your own sections
+anywhere, and move Core's:
+
+```java
+ConfigService config = core.getConfigService();
+config.setDirectory("leapfrog");                       // instead of configs/
+config.register(new SettingsSection("waypoints", waypoints), ConfigLocation.profile("myclient/waypoints"));
+config.register(new MySection(), ConfigLocation.shared("stats"));
+config.place("hud", ConfigLocation.profile("visual/hud"));        // move one of Core's
+config.place("accounts", ConfigLocation.shared("private/accounts"));
+```
+
+A path is folder and file names separated by `/` — letters, digits, `.`, `_`,
+`-` — so it can make folders but never leave the config folder. `place` wins
+over a location given at registration, and two sections can never share a file.
+Friends and accounts are shared by default: switching profile changes how you
+play, not who your alts are.
+
+Profiles: `load(name)` switches profile and loads its sections, `saveAs(name)`
+copies the current state into a new one, `save()` writes everything,
+`listProfiles()` and `delete(name)` do what they say. The last active profile is
+remembered across restarts. `getProfileDirectory(name)` and
+`getSharedDirectory()` are there for files of your own.
+
+**Encryption is optional, and yours.** Nothing is encrypted unless you give a
+section a `ConfigCipher`; it is then written as `.enc`, and the `.json` it
+replaces is deleted once the encrypted file is written:
+
+```java
+byte[] salt = loadOrCreateSalt();                                   // yours; a salt need not be secret
+SecretKey key = AesGcmCipher.deriveKey(passphrase, salt);           // PBKDF2-HMAC-SHA256
+config.encrypt("accounts", AesGcmCipher.of(key));                   // before start(), to read it back
+```
+
+`AesGcmCipher` is AES-GCM from the JDK, with nothing to add to your build. Each
+write gets a fresh nonce, and the file's location is bound in, so an altered file
+— or one copied into another section's place — fails to decrypt instead of
+loading. Implement `ConfigCipher` yourself for anything else, such as the
+operating system's credential store.
+
+**Where the key comes from decides what the encryption is worth**, which is why
+Core does not choose. A passphrase the player types protects the file from
+anyone without it. A key from the OS credential store protects it from other
+users of the machine. A key file beside the configs only stops it being read by
+accident — pasted into a support channel, synced somewhere — since anything that
+can read one can read the other.
+
+**Nothing is lost quietly.**
+
+- Every file is written to a temporary file and renamed over the old one, so a
+  crash mid-save leaves the last good file, never half of one.
+- A file that cannot be read — broken by a hand edit, or encrypted with another
+  key — is copied aside as `<name>.unreadable-<time>` before anything can
+  overwrite it. Its section keeps its defaults, and every other section loads.
+- An encrypted file found with no cipher installed is left alone, with an error
+  saying which `encrypt(...)` call is missing.
+- Nothing is saved on shutdown unless the config was loaded first.
+
+Profiles saved by the old single-file format are converted on the first load,
+and the originals are moved to `configs/legacy/`.
+
 ---
 
 ## 2. A module
@@ -82,33 +164,38 @@ public final class KillAura extends Module {
             multi("Targets", Target.class, Target.PLAYERS, Target.MOBS);        // checkbox list
     private final ColorSetting         hitbox = color("Hitbox", Color.RED);
 
-    private final Stopwatch attackTimer = Stopwatch.expired();
+    // Who counts, in the game's own types. LivingTracker is yours: see §12.
+    private final TargetSelector<EntityLivingBase> enemies = TargetSelector.from(LivingTracker.class)
+            .range(reach::getDouble)
+            .where(e -> targets.has(e instanceof EntityPlayer ? Target.PLAYERS : Target.MOBS))
+            .build();
+    private final TargetLock<EntityLivingBase> lock = Core.targets().lock(enemies);
 
-    // Core has no entity type, so the two positions come from your adapter.
-    private Vec3 eye;
-    private Vec3 target;
+    private final Stopwatch attackTimer = Stopwatch.expired();
     private Vec2 aim = Vec2.rotation(0f, 0f);
 
     @Subscribe(stage = Stage.PRE, priority = Priority.HIGH)
     private void onTick(TickEvent event) {
-        if (target == null || eye.distanceTo(target) > reach.getFloat()) return;
+        Tracked<EntityLivingBase> target = lock.update();       // keeps one target, no flicking
+        if (target == null) return;
 
-        aim = RotationMath.step(aim, eye.rotationTo(target), 30f);
+        Vec3 eye = Core.entities().getSelf().getEyePosition();
+        aim = RotationMath.step(aim, eye.rotationTo(target.aimPoint(eye, 0.05)), 30f);
         applyRotation(aim);                                      // yours
 
         if (attackTimer.tryConsume(1000 / cps.randomInt())) {    // randomised delay
-            attack();                                            // yours
+            attack(target.get());                                // yours: the game's own entity
         }
     }
 
     @Subscribe
     private void onRender3D(Render3DEvent event) {
-        if (target != null) {
-            Render.boxOutline(Box.around(target, 0.6d, 1.8d), 1.5f, hitbox.resolve());
+        if (lock.hasTarget()) {
+            Render.boxOutline(lock.get().getBox(), 1.5f, hitbox.resolve());
         }
     }
 
-    @Override protected void onDisable() { target = null; }
+    @Override protected void onDisable() { lock.release(); }
 
     /** Extra text shown after the name in the ArrayList. */
     @Override public String getDisplayInfo() { return mode.displayValue(); }
@@ -118,14 +205,16 @@ public final class KillAura extends Module {
 }
 ```
 
-Everything above compiles against Core except the two lines marked `// yours`:
-finding a target and swinging at one need the game, and Core has no entity type
-— see §14. Everything else is real API: `Vec3.rotationTo` solves the rotation,
-`RotationMath.step` traces the turn out over several ticks instead of snapping,
-and `Box.around` builds the hitbox to outline. One module owning its own aim like
-this is fine; the moment a second one wants the head they fight, which is what
-`Core.rotations()` in §10 exists to settle. `ExampleKillAura` in the test
-suite is this module, running headless.
+Everything above is Core's API except the two lines marked `// yours` — writing
+the rotation and swinging need the game — and the game's own entity types, which
+reach Core only as the type parameter of a tracker (§12). The selector picks the
+target in your terms, the lock holds it across ticks, `aimPoint` aims just
+inside its box rather than at its edge, `RotationMath.step` traces the turn out
+over several ticks instead of snapping, and the box comes back ready to outline.
+One module owning its own aim like this is fine; the moment a second one wants
+the head they fight, which is what `Core.rotations()` in §10 exists to settle.
+`ExampleKillAura` in the test suite is the aiming half of this module, running
+headless with its positions handed in.
 
 Reading settings at the use site:
 
@@ -1085,7 +1174,7 @@ The seam does not change when you drop the GUI — it gets smaller:
 | A game screen to host it | calls `Core.gui().renderFrame()` and the input methods | calls your own code |
 | Input | `Core.gui().mousePressed / keyPressed / charTyped / scrolled` | yours |
 | Persistence | `GuiService` saves screens through `Screen.save()` | register your own `ConfigSection` |
-| Keybinds and commands | post `KeyEvent` / `MouseEvent` / `ChatSendEvent` | unchanged — these are not the GUI's |
+| Keybinds and commands | `Core.hooks().key / mouse / chatSend` | unchanged — these are not the GUI's |
 
 Keybinds and commands are the row that catches people out: `InputService` and
 `CommandRegistry` listen on the event bus whether or not you use the GUI, so a
@@ -1131,7 +1220,7 @@ a failure is logged *and* rethrown, so a `Future` you check still reports it.
 
 Background work must not touch game state. `sync(Runnable)` queues a task and
 `runPendingSync()` runs the queue, and Core wires that drain to `TickEvent` — so
-**if your adapter posts ticks, this already works.** If it does not, call
+**if your adapter calls the tick hooks, this already works.** If it does not, call
 `Core.threads().runPendingSync()` from your game loop yourself; `ThreadService`
 warns if a backlog builds up and nobody is draining it.
 
@@ -1815,7 +1904,7 @@ Every entry carries a **seq** (global, gapless, the one true order), a monotonic
 **nanos** since `begin`, the client **tick** it happened in, and its
 **`EntryType`**: tick start and end, packet, motion before and after the client
 reports it, correction, world change, mark. Packets add direction, phase, the
-describer's type name and `PacketKind`, and whatever position, velocity,
+describer's type name and the name of its `PacketKind`, and whatever position, velocity,
 rotation, ground state and extra fields the describer pulled out. Motion
 entries add position, velocity, ground, the held `MovementInput`, sprint and
 sneak state, and rotation with last tick's rotation.
@@ -1823,24 +1912,25 @@ sneak state, and rotation with last tick's rotation.
 It is built from events rather than hooks of its own, and adapters post them
 for their modules anyway:
 
-| Event | Post it | Gives the timeline |
+| `Core.hooks()` call | When | Gives the timeline |
 |---|---|---|
-| `TickEvent` | already posted, PRE and POST | tick boundaries |
-| `PacketEvent.sent(p)` | before an outbound packet is written | outbound traffic |
-| `PacketEvent.received(p)` | network thread, as an inbound packet is decoded | true arrival order |
-| `PacketEvent.applied(p)` | game thread, as that packet's handler runs | the tick it took effect |
-| `MotionUpdateEvent` | PRE and POST around the client's movement packet | what the client believed |
-| `WorldEvent` | already posted | world load and unload |
+| `tickStart()` / `tickEnd()` | already called | tick boundaries |
+| `packetSent(p)` | before an outbound packet is written | outbound traffic |
+| `packetReceived(p)` | network thread, as an inbound packet is decoded | true arrival order |
+| `packetApplied(p)` | game thread, as that packet's handler runs | the tick it took effect |
+| `motionPre(...)` / `motionPost(...)` | around the client's movement packet | what the client believed |
+| `worldLoaded` / `worldUnloaded` | already called | world load and unload |
 
 Post `received` and `applied` with the **same packet instance**: that is what
 links them, so `timeline.linked(applied)` finds the arrival and the difference
-in `nanos` is how long it sat in the queue. An applied `TELEPORT`, `VELOCITY` or
-`EXPLOSION` is followed immediately by a `CORRECTION` entry pointing at it,
+in `nanos` is how long it sat in the queue. An applied packet the describer
+marked `asCorrection()` — whatever your version's teleports, knockback and
+pushes are — is followed immediately by a `CORRECTION` entry pointing at it,
 whose `clientSeq` field is the client's last motion entry, the state the
-server just overruled.
+server just overruled. Core decides nothing about which packets those are.
 
 The queries are about how entries relate, not about single entries:
-`responsesTo(sent, PacketKind.TELEPORT, 5)` finds what arrived within five ticks
+`responsesTo(sent, Packets.TELEPORT, 5)` — your own kind — finds what arrived within five ticks
 of an outbound packet, going by timing; `correlated(entry)` pairs a
 transaction, keep-alive or teleport confirm with its reply exactly, by the
 correlation key the describer gave both; `between("jump", "landed")` slices
@@ -1897,48 +1987,69 @@ Four services read the connection: **`Core.tps()`** (the server's tick rate),
 one way in, `Core.network()`, which is also where the timeline recorder in §10
 gets its packets.
 
+The services do the work — smoothing, spike detection, brand matching, ranking
+evidence — and **know nothing about any game**. No packet names, no channel
+names, no tick rate, no server software, no anticheat. All of that is plugged
+in by your client, so a version that renames, splits or removes a packet costs a
+line in your describer and nothing in Core.
+
 ```java
 Core.tps().getTps();                               // 19.8
 Core.lag().getPing();                              // 48
 Core.lag().isLagging();                            // true while the server is silent
 Core.server().isOn("hypixel.net");                 // true on mc.hypixel.net
-Core.server().getSoftware();                       // PAPER
-Core.anticheat().getPrimary();                     // Optional[Watchdog (KNOWN: ...)]
+Core.server().getSoftware();                       // Paper — if you registered it
+Core.anticheat().getPrimary();                     // Optional[MyAC (KNOWN: ...)] — if you registered it
 ```
 
 ### Wiring it up
 
-Two things, and the first is what the timeline needs anyway:
-
-1. **Post the traffic.** `PacketEvent.sent(p)` before an outbound packet is
-   written, `PacketEvent.received(p)` as an inbound one is decoded. `applied`
-   is optional here; an adapter that only posts `applied` still works.
-2. **Say what the packets are**, once, with a describer. Only a handful matter,
-   and each has a factory on `PacketDescription` that fills in what the
-   services look for:
+1. **Hook the traffic.** `Core.hooks().packetSent(p)` before an outbound packet
+   is written, `packetReceived(p)` as an inbound one is decoded. `packetApplied`
+   is optional here; a packet given only that counts as arriving then.
+2. **Declare your packet kinds**, as an enum, the same way you declare module
+   categories. Core ships none but `PacketKind.OTHER`. Kinds are labels for
+   you — filtering, timeline queries — and no service reads them.
+3. **Say what the packets are**, once, with a describer. Each description gets
+   your kind, plus a **role** for each thing a service should read from it:
 
 ```java
+public enum Packets implements PacketKind { TIME, TRANSACTION, KEEP_ALIVE, PAYLOAD, TELEPORT, VELOCITY }
+
 // 1.8.9 (MCP names)
 Core.network().setDescriber(PacketDescriber.byClass()
-        .on(S03PacketTimeUpdate.class, p ->
-                PacketDescription.timeUpdate("S03PacketTimeUpdate", p.getTotalWorldTime()))
-        .on(S32PacketConfirmTransaction.class, p ->
-                PacketDescription.transaction("S32PacketConfirmTransaction", p.getActionNumber()))
-        .on(S00PacketKeepAlive.class, p ->
-                PacketDescription.keepAlive("S00PacketKeepAlive", p.func_149134_c()))
+        .on(S03PacketTimeUpdate.class, p -> PacketDescription.of("S03PacketTimeUpdate", Packets.TIME)
+                .withWorldAge(p.getTotalWorldTime()))                          // TPS
+        .on(S32PacketConfirmTransaction.class, p -> PacketDescription.of("S32PacketConfirmTransaction", Packets.TRANSACTION)
+                .withTransaction(p.getActionNumber()))                         // anticheat
+        .on(S00PacketKeepAlive.class, p -> PacketDescription.of("S00PacketKeepAlive", Packets.KEEP_ALIVE)
+                .withCorrelationKey("keepalive:" + p.func_149134_c()))          // no role: just recorded
         .on(S3FPacketCustomPayload.class, p -> "MC|Brand".equals(p.getChannelName())
                 // read a copy: the game reads the same buffer after this returns
-                ? PacketDescription.brand("S3FPacketCustomPayload",
-                        new PacketBuffer(p.getBufferData().copy()).readStringFromBuffer(32767))
-                : PacketDescription.payload("S3FPacketCustomPayload", p.getChannelName()))
+                ? PacketDescription.of("S3FPacketCustomPayload", Packets.PAYLOAD).withBrand(
+                        new PacketBuffer(p.getBufferData().copy()).readStringFromBuffer(32767))   // server
+                : PacketDescription.of("S3FPacketCustomPayload", Packets.PAYLOAD))
+        .on(S08PacketPlayerPosLook.class, p -> PacketDescription.of("S08PacketPlayerPosLook", Packets.TELEPORT)
+                .asCorrection())                                               // timeline
+        .on(S12PacketEntityVelocity.class, p -> PacketDescription.of("S12PacketEntityVelocity", Packets.VELOCITY))
         .build());
 ```
 
-`PacketDescriber.byClass()` builds a describer from one rule per packet class
-— a hash lookup per packet instead of an `instanceof` chain, with subclasses
-falling back to their parent's rule and anything unmatched to the class name.
-A plain lambda describer works just as well. Name packets with string literals:
-in an obfuscated build the class is called `a`.
+| Role | Read by | Give it to |
+|---|---|---|
+| `withWorldAge(ticks)` | `Core.tps()` | the packet carrying the server's clock |
+| `withTransaction(id)` | `Core.anticheat()` | packets the server sends for the client to answer, to time it |
+| `withLatency(ms)` | `Core.lag()` | whatever reports the server's measured ping for the local player |
+| `withBrand(brand)` / `withChannels(list)` | `Core.server()` | whatever carries the brand and registered channels |
+| `asCorrection()` | `Core.timeline()` | packets that overrule the client's motion |
+
+A version with no such packet never gives the role; a version where two packets
+play it gives it to both. The channel names in the example are the adapter's —
+Core has none. `PacketDescriber.byClass()` builds a describer from one rule per
+packet class — a hash lookup per packet instead of an `instanceof` chain, with
+subclasses falling back to their parent's rule and anything unmatched to the
+class name. A plain lambda describer works just as well. Name packets with
+string literals: in an obfuscated build the class is called `a`.
 
 Where the version already parses something, reporting it is simpler than
 describing the packet it came in:
@@ -1946,7 +2057,6 @@ describing the packet it came in:
 ```java
 // from a tick handler, about once a second
 Core.server().reportBrand(mc.thePlayer.getClientBrand());          // 1.8.9
-Core.server().reportBrand(mc.getNetworkHandler().getBrand());      // modern Fabric (Yarn)
 
 NetworkPlayerInfo self = mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID());
 if (self != null) Core.lag().reportPing(self.getResponseTime());    // 1.8.9
@@ -1957,43 +2067,47 @@ Both are safe to call every tick: an unchanged value changes nothing.
 What each service needs, beyond the `PacketEvent` posts and the `WorldEvent`
 your adapter already sends:
 
-| Service | Needs described | Or reported | Works without either? |
-|---|---|---|---|
-| `Core.lag()` | `withLatency(ms)` on the local player's list entry, for ping | `reportPing(ms)` | Yes: rates and spikes need arrivals only |
-| `Core.tps()` | `timeUpdate(type, worldAge)` | — | Reports a healthy 20 with `hasEstimate()` false |
-| `Core.server()` | `brand(type, brand)`, `channels(type, list)` | `reportBrand`, `reportChannels` | Yes: address, singleplayer and `isOn` come from `WorldEvent` |
-| `Core.anticheat()` | `transaction(type, id)` for inbound transactions / pings | — | Yes: address and brand signatures still match |
+| Service | Needs a role | Or reported | Also yours | Works without? |
+|---|---|---|---|---|
+| `Core.lag()` | `withLatency`, for ping | `reportPing(ms)` | the spike threshold, if not 1.5s | Yes: rates and spikes need arrivals only |
+| `Core.tps()` | `withWorldAge` | — | optionally `setTargetTps` | NaN, with `hasEstimate()` false |
+| `Core.server()` | `withBrand`, `withChannels` | `reportBrand`, `reportChannels` | `registerSoftware(...)` | Yes: address, singleplayer and `isOn` come from `WorldEvent` |
+| `Core.anticheat()` | `withTransaction`, for timing | — | `register(signature)` — none ship | No: with no signatures, nothing is detected |
 
 ### TPS
 
-A vanilla server sends its world clock every twenty ticks. Each update says how
-many ticks passed (the world age moved on by that much) and how long they took
-(the time since the last one arrived); `getTps()` is the ratio of the sums over
-the last ten updates, never above the target rate. Summing rather than
-averaging each update's rate is what keeps network bunching out of it: an update
-held back 0.9s and the one after arriving 0.1s later read as 10.5 and 200 TPS,
-which average to 105; summed, they are 40 ticks in two seconds, which is 20.
+A server that tells the client its world age every so often is saying how many
+ticks passed (the age moved on by that much) and, by when the update arrives,
+how long they took. `getTps()` is the ratio of the sums over the last ten
+updates. Summing rather than averaging each update's rate is what keeps network
+bunching out of it: an update held back 0.9s and the one after arriving 0.1s
+later read as wildly different rates; summed, they are the ticks that passed in
+the time that passed.
 
-A frozen server sends no update to report that it froze, so the estimate is
-also bounded by the update now overdue: three seconds without one is at most
-twenty ticks in three seconds, whatever the window says. Measurements are
-forgotten on leaving or changing server, and a world age that jumps backwards
-or by more than a minute re-baselines rather than reporting a spike.
+**No rate is assumed.** Not what the server should run at, nor how often it
+sends its clock — both are measured. A frozen server sends no update to report
+that it froze, so the estimate is also bounded by the update now overdue:
+once it is later than updates have been arriving, the ticks it would have
+carried are spread over the time actually waited. Measurements are forgotten on
+leaving or changing server, and a world age that goes backwards, or leaps by far
+more than updates have been carrying, re-baselines rather than reporting a spike.
 
-`setTargetTps(double)` is for 1.20.3+ servers that change their rate with
-`/tick rate`. `TpsTracker` is the whole algorithm with no bus or service; feed
-it from anywhere with `update(nanos, worldAge)`.
+`setTargetTps(rate)` is yours to give, and optional: it caps the estimate, so
+bunching never reads as a server running fast, and it is what `getTps()` reports
+before the first measurement. Without one, that is NaN. Call it again whenever
+your server announces a different rate. `TpsTracker` is the whole algorithm with
+no bus or service; feed it from anywhere with `update(nanos, worldAge)`.
 
 ### Lag
 
 Two different things get called lag. A **slow** server still talks, less
 often: that is TPS. A **silent** one sends nothing at all, and everything the
 client does meanwhile is judged late. `Core.lag()` watches for the second: once
-nothing has arrived for `getSpikeThresholdMillis()` (1.5s by default, and a
-vanilla server sends the time every second even to an empty world),
-`isLagging()` turns true and a `LagSpikeEvent` is posted, then another with the
-whole duration when traffic resumes. Both are posted on the game thread, and
-never outside a world.
+nothing has arrived for `getSpikeThresholdMillis()` (1.5s unless you set it —
+pick something longer than the longest gap your game's server leaves on a
+healthy connection), `isLagging()` turns true and a `LagSpikeEvent` is posted,
+then another with the whole duration when traffic resumes. Both are posted on
+the game thread, and never outside a world.
 
 ```java
 @Subscribe
@@ -2003,29 +2117,45 @@ private void onLag(LagSpikeEvent event) {
 ```
 
 `getInboundRate()` and `getOutboundRate()` are packets a second over the last
-second. `getPing()` is the server's own measurement, the one the tab list
-shows: a client cannot time a round trip the server starts, and nothing a
-client starts is answered promptly by vanilla. `getAveragePing()` and
-`getPingJitter()` are over the last ten reports.
+second. `getPing()` is the server's own measurement: a client cannot time a
+round trip the server starts. `getAveragePing()` and `getPingJitter()` are over
+the last ten reports.
 
 ### Server
 
 ```java
-Core.server().getInfo();                   // ServerInfo(play.example.net:25565, Paper (Velocity))
-Core.server().getBrand().getSoftware();    // PAPER — the server behind any proxy
-Core.server().getBrand().getProxy();       // VELOCITY, or null
+Core.server().registerSoftware(                    // yours: Core recognises none
+        ServerSoftware.of("Purpur"),               // forks before what they forked
+        ServerSoftware.of("Paper"),
+        ServerSoftware.of("Forge", "forge", "fml"),
+        ServerSoftware.proxy("Velocity"),
+        ServerSoftware.proxy("BungeeCord", "bungeecord", "waterfall"));
+
+Core.server().getInfo();                   // ServerInfo(play.example.net:25577, Paper (Velocity))
+Core.server().getBrand().getSoftware();    // Paper — the server behind any proxy
+Core.server().getBrand().getProxy();       // Velocity (proxy), or null
+Core.server().getBrand().getRaw();         // always: exactly what the server sent
 Core.server().hasChannel("floodgate:skin");
 ```
 
-`ServerBrand.parse` understands the formats proxies write —
-`"BungeeCord (git:...) <- Paper"`, `"Waterfall (...) <- Purpur"`,
-`"Paper (Velocity)"` — and `ServerSoftware.identify` matches whole words, so
-`"Newspaper"` is not Paper. The address is normalised (lower case, no trailing
-dot, port split off, IPv6 in brackets understood), and `isOn("hypixel.net")`
-matches the domain and its subdomains, never a lookalike.
+Server software comes and goes faster than any library, so a built-in list would
+go stale and name the wrong thing with confidence. You register what you care
+about, with the words its brand contains. The whole brand is matched against
+every registration by **whole word**, ignoring case, so `"Newspaper"` is not
+Paper — and a proxy and the server behind it are found independently, which is
+why no proxy's brand format needs knowing: `"BungeeCord (git:...) <- Paper"` and
+`"Paper (Velocity)"` both name one of each. Where a brand names two, the one
+registered first wins. Registering later reads a brand already received again;
+with nothing registered, the software is `ServerSoftware.UNKNOWN` and the raw
+brand is still there.
 
-1.20.2 and later send the brand during the configuration phase, before any
-world exists. It is held and applied when the world loads, which is why what a
+The address is normalised (lower case, no trailing dot, port split off, IPv6 in
+brackets understood), with **no default port** — `hasPort()` says whether the
+address named one — and `isOn("hypixel.net")` matches the domain and its
+subdomains, never a lookalike.
+
+A brand that arrives before the world does — some games send it while still
+connecting — is held and applied when the world loads, which is why what a
 server said is forgotten on leaving rather than on joining. Changes are
 announced with one `ServerChangeEvent` per tick on the game thread, with
 `isJoin()`, `isLeave()` and `isBrandChanged()` against what was last announced:
@@ -2047,27 +2177,22 @@ sends proves which anticheat it runs, so use this to pick sensible defaults,
 not to bet an account on.
 
 Each registered `AntiCheatSignature` looks at `ServerEvidence` — the
-`ServerInfo` above, plus the `TransactionPattern` of inbound transactions and
-pings: how fast they come, and whether their ids count up or down and on which
-side of zero — and returns a `Detection` or null. They run about once a second
-and whenever the server changes; a changed result posts an
-`AntiCheatChangeEvent`.
+`ServerInfo` above, plus the `TransactionPattern` of the packets given
+`withTransaction`: how fast they come, and whether their ids count up or down
+and on which side of zero — and returns a `Detection` or null. They run every
+`setEvaluateEveryTicks(n)` ticks (20 unless set) and whenever the server
+changes; a changed result posts an `AntiCheatChangeEvent`.
 
-What ships is deliberately what does not go stale:
-
-- **`transactionBased()`** — a server sending transactions or pings far faster
-  than inventory clicks would explain. Vanilla never does; every anticheat that
-  predicts movement does it every tick. It reports `"Transaction-based
-  anticheat"`, since it cannot tell which one.
-- **`onServer("hypixel.net", "Watchdog")`** — public knowledge.
-
-A signature that names an anticheat from its transaction numbering is only as
-good as the last time someone read that anticheat's source, and a stale one
-reports the wrong name with confidence. So those are yours to register:
+**Core registers no signatures.** A signature that names an anticheat, or a
+server's anticheat, is a fact about one game's ecosystem that goes stale, and a
+stale one reports the wrong name with confidence. So every signature is yours,
+built from these or written as a lambda:
 
 ```java
-Core.anticheat().register(AntiCheatSignature.onServer("example.net", "Vulcan"));
+Core.anticheat().register(AntiCheatSignature.onServer("example.net", "MyAC"));
+Core.anticheat().register(AntiCheatSignature.brandContains("myac", "MyAC", Confidence.KNOWN));
 Core.anticheat().register(AntiCheatSignature.channel("myac:main", "MyAC", Confidence.KNOWN));
+Core.anticheat().register(AntiCheatSignatures.transactionBased(2, 10));   // your rates, per second
 Core.anticheat().register(evidence -> {
     TransactionPattern p = evidence.getTransactions();
     return p.getOrder() == TransactionPattern.Order.DECREMENTING && p.getHighestId() < -1000
@@ -2076,11 +2201,14 @@ Core.anticheat().register(evidence -> {
 });
 ```
 
-Detections rank by confidence, and at equal confidence a named one ranks above
-the generic transaction detection, so a signature you add for the same evidence
-is the one `getPrimary()` reports. `clearSignatures()` drops the built-ins too.
-Describe inbound **keep-alives** as `keepAlive`, not `transaction`: vanilla sends
-those on its own schedule, and counting them would make every server look
+`transactionBased(possibleRate, likelyRate)` reports a generic
+`"Transaction-based anticheat"` once answer-me packets arrive faster than your
+game's own traffic explains — the two rates are yours, because what is normal
+depends on the game. Detections rank by confidence, and at equal confidence a
+named one ranks above the generic one, so a signature you add for the same
+evidence is the one `getPrimary()` reports. Give `withTransaction` only to
+packets the server sends to time the client: one it sends on its own fixed
+schedule, such as a keep-alive on most versions, would make every server look
 protected.
 
 ### Hearing the traffic yourself
@@ -2088,8 +2216,8 @@ protected.
 `Core.network().addListener(PacketListener)` gets each packet once, already
 described: inbound on arrival (including ones a handler cancelled, since the
 server still sent them), outbound only if actually sent. It is the same stream
-the services read, for a module that cares about `PacketKind.VELOCITY` and not
-about packet classes.
+the services read, for a module that cares about `packet.getKind().is(Packets.VELOCITY)`
+and not about packet classes.
 
 ### Threading
 
@@ -2102,7 +2230,7 @@ the tick, on the game thread, so a handler may touch the game.
 
 Post no `PacketEvent` and all four services sit idle: nothing is described,
 nothing is posted, and every getter returns its "unknown" value (`-1` ping,
-healthy TPS with `hasEstimate()` false, `ServerInfo.DISCONNECTED`, no
+NaN TPS with `hasEstimate()` false, `ServerInfo.DISCONNECTED`, no
 detections). Install no describer and `Core.lag()` still works in full, since
 it needs arrivals and not meanings. `TpsTracker`, `TransactionTracker` and
 `util.time.RateMeter` are plain classes with no bus or service behind them.
@@ -2111,85 +2239,114 @@ it needs arrivals and not meanings. `TpsTracker`, `TransactionTracker` and
 
 ## 12. Entities and targeting
 
-Two layers. **`Core.entities()`** is the world: every entity, read once a tick
-through your adapter and indexed so "what is near here" does not ask
-everything. **`Core.targets()`** picks from that world: selectors that filter
-and rank it, and locks that hold a choice across ticks. ESP, radar and nametags
-can use the first without the second.
+Two layers. **`Core.entities()`** is the world: read once a tick through your
+adapter and handed to **trackers** — one per kind of thing you care about, typed
+by the game's own class. **`Core.targets()`** picks from a tracker: selectors
+that filter and rank it, and locks that hold a choice across ticks. ESP, radar
+and nametags can use the first without the second.
 
-### You define the vocabulary; Core defines none
+### A tracker per kind of thing, in the game's own types
 
 Core has no list of entity types, no idea what "dead" or "teammate" means, and
-no numbers taken from any game — no reach, no hitbox size, no eye height. A
-game that adds an entity, a mechanic or a whole new way to fight must never
-need a change here. So you declare three things, once, the same way you declare
-module categories:
+no numbers taken from any game — no reach, no hitbox size, no eye height. So it
+does not describe entities at all. You write a tracker for each kind you want
+followed, typed by the game's class, and it hands back the game's own object:
 
 ```java
-public enum Kinds implements EntityCategory { PLAYER, MONSTER, CRYSTAL, ITEM, OTHER }
-public enum Tags  implements EntityTag      { INVISIBLE, TEAMMATE, DEAD, BOT }
-public enum Stats implements EntityAttribute { HEALTH, ARMOR }
+public final class CrystalTracker extends EntityTracker<EntityEnderCrystal> {
+    public CrystalTracker() { super(EntityEnderCrystal.class); }
+}
+
+public final class LivingTracker extends EntityTracker<EntityLivingBase> {
+    public LivingTracker() { super(EntityLivingBase.class); }
+
+    @Override protected boolean accepts(EntityLivingBase e) {        // who counts, asked every tick
+        return e.deathTime == 0 && !Core.social().isFriend(e.getName());
+    }
+}
+
+Core.entities().registerAll(new LivingTracker(), new CrystalTracker());
+
+Tracked<EntityEnderCrystal> crystal = Core.entities().get(CrystalTracker.class).nearest(6);
+crystal.get().getEntityId();                       // the game's object, already typed
 ```
 
-| You declare | It answers | Each entity has | Read with |
-|---|---|---|---|
-| `EntityCategory` | what is it? | exactly one | `getCategory()`, `is(Kinds.PLAYER)` |
-| `EntityTag` | what is true of it? | any number | `has(Tags.DEAD)` |
-| `EntityAttribute` | what numbers does it have? | any number | `get(Stats.HEALTH)` — `NaN` when not set |
+The class argument is there because Java forgets `E` at runtime. It can be an
+interface (`IMob`), and subclasses come along: `EntityTracker<EntityLivingBase>`
+holds players and monsters alike. Trackers overlap freely — Core reads the
+world **once** a tick, works out per class which trackers want it (one map
+lookup, cached), reads each wanted entity's geometry once, and hands it to all
+of them. An entity no tracker wants is never read.
 
-Cut them as coarse or as fine as your modules need. There is no limit on how
-many you declare, and an enum needs no body: its constant names are the names.
+| You write | For |
+|---|---|
+| `extends EntityTracker<E>` | a tracker other code looks up by class, `Core.entities().get(CrystalTracker.class)` |
+| `accepts(E)` | which entities of the type to keep; one that stops passing is let go |
+| `onTracked` / `onUntracked` | reacting as entities arrive and leave |
+| `EntityTracker.of(type, predicate)` | a tracker one module owns, with no class of its own |
 
 ### Wiring it up
 
-One class, one line:
+The adapter's half is one class that lists the world and says where things are:
 
 ```java
 public final class LegacyEntities implements EntitySource<Entity> {
     public Iterable<Entity> entities() { return mc.theWorld == null ? null : mc.theWorld.loadedEntityList; }
     public Entity self()               { return mc.thePlayer; }
 
-    public void read(Entity e, EntityData out) {
-        out.position(e.posX, e.posY, e.posZ)
-           .size(e.width, e.height)
-           .eyeHeight(e.getEyeHeight())
-           .rotation(e.rotationYaw, e.rotationPitch)
-           .tag(Tags.INVISIBLE, e.isInvisible());
-        if (e instanceof EntityPlayer)            out.category(Kinds.PLAYER).name(e.getName());
-        else if (e instanceof EntityEnderCrystal) out.category(Kinds.CRYSTAL);
-        else if (e instanceof IMob)               out.category(Kinds.MONSTER);
-        else                                      out.category(Kinds.OTHER);
-        if (e instanceof EntityLivingBase) {
-            EntityLivingBase l = (EntityLivingBase) e;
-            out.set(Stats.HEALTH, l.getHealth()).set(Stats.ARMOR, l.getTotalArmorValue())
-               .tag(Tags.DEAD, l.deathTime > 0);
-        }
-    }
+    public double x(Entity e)          { return e.posX; }
+    public double y(Entity e)          { return e.posY; }
+    public double z(Entity e)          { return e.posZ; }
+    public double width(Entity e)      { return e.width; }
+    public double height(Entity e)     { return e.height; }
+    public double eyeHeight(Entity e)  { return e.getEyeHeight(); }   // optional: 0 if left out
+    public float yaw(Entity e)         { return e.rotationYaw; }      // optional
+    public float pitch(Entity e)       { return e.rotationPitch; }    // optional
 }
 
 Core.entities().setSource(new LegacyEntities());
 ```
 
-Core refreshes the snapshot at the start of every tick, ahead of every module,
-so all of them read the same world. **Nothing you leave out gets a default
-from a game**: no category is `EntityCategory.UNCATEGORIZED`, no size is a box
-with no volume, no eye height puts the eyes at the position, and an attribute
-you did not set reads as `NaN`, so "no health" is never confused with "zero
-health". A `read` that throws skips that entity for the tick and is logged
-once; a source that throws while listing keeps the last tick's snapshot.
-`setAutoRefresh(false)` and `refresh()` let you pick a different point in your
-version's loop.
+Core refreshes every tracker at the start of every tick, ahead of every module,
+so all of them read the same world. **Nothing you leave out gets a default from
+a game**: no eye height puts the eyes at the position, no facing is yaw 0. A
+source that throws for one entity skips it for the tick and is logged once; one
+that throws while listing keeps the last tick's world. `setAutoRefresh(false)`
+and `refresh()` let you pick a different point in your version's loop.
+
+The local player is in no tracker. It is `Core.entities().getSelf()`, and it is
+where targeting looks from.
+
+### Between ticks
+
+A tick is late for anything that reacts to a packet. A crystal aura wants the
+crystal the moment its spawn packet arrives, not up to 50ms later, and wants it
+gone the moment it is destroyed so it is not hit twice:
+
+```java
+// in your packet handling, on the game thread
+crystals.track(spawnedCrystal);      // tracked now; queries find it straight away
+crystals.forget(destroyedCrystal);   // let go now
+```
+
+Tracking something already tracked returns it unchanged, so its velocity stays a
+per-tick one.
 
 ### The snapshot
 
-A `TrackedEntity` holds only what is true of an object in any 3D world — a
-position, a box, a facing, the eye height you gave it — plus your category,
-tags and attributes. Core adds what it can measure itself: `getVelocityX/Y/Z`
-from the last tick's move, `getTicksTracked()`, `extrapolate(n)`.
+A `Tracked<E>` is the game's object, from `get()`, plus what Core can measure
+itself: a position, a box, a facing, the eye height, `getVelocityX/Y/Z` from the
+last tick's move, `getTicksTracked()`, `extrapolate(n)`.
 
-It is **one object per entity for its whole life**, updated in place each tick
-and never recycled. Holding one across ticks is safe: it keeps moving with the
-entity, and `isTracked()` turns false when it leaves the world.
+It is **one object per entity per tracker for as long as the tracker keeps
+it**, updated in place each tick and never recycled. Holding one across ticks is
+safe: it keeps moving with the entity, and `isTracked()` turns false when the
+tracker lets go — because the entity left the world or stopped being accepted.
+Two trackers holding one entity hold two snapshots of it.
+
+The position is the **tick's**, read before the world moves. It is what modules
+should decide with. To draw smoothly between ticks, use the game's own
+interpolated position from `get()`.
 
 Reads are primitives first. `getX()`, `getMinX()` and
 `squaredDistanceToBox(x, y, z)` read fields and allocate nothing;
@@ -2198,47 +2355,43 @@ tick on first ask.
 
 ### Selectors
 
-A `TargetSelector` is built once, kept in a field and run as often as needed.
-**It matches exactly what you tell it to.** The default is every category, any
-range, any angle, nearest first; the only entity left out unasked is the local
-player, since queries look from there.
+A `TargetSelector<E>` is built once, kept in a field and run as often as needed.
+**It matches exactly what you tell it to.** The default is every entity in its
+tracker, any range, any angle, nearest first.
 
 ```java
-private final TargetSelector enemies = TargetSelector.builder()
-        .categories(Kinds.PLAYER, Kinds.MONSTER)
-        .without(Tags.DEAD, Tags.TEAMMATE, Tags.BOT)
-        .excludeFriends()                              // Core.social()'s list, by name
+private final TargetSelector<EntityLivingBase> enemies = TargetSelector.from(LivingTracker.class)
         .range(reach::getDouble)                       // your setting, read on every query
         .fov(fov::getDouble)
-        .where(Stats.HEALTH, health -> health > 0)
-        .sort(TargetSort.by(Stats.HEALTH))
+        .where(e -> e.hurtTime == 0)                   // the game's object, already typed
+        .sort(TargetSort.by(EntityLivingBase::getHealth))
         .build();
 ```
 
+`from(LivingTracker.class)` finds the tracker on each query, so a module can
+build its selectors in field initialisers before any tracker is registered; until
+one is, the selector finds nothing. `from(tracker)` takes one directly.
+
 | Builder call | Keeps |
 |---|---|
-| `categories(...)` | entities in any of these categories |
-| `withAny(...)` / `withAll(...)` / `without(...)` | entities with one / every / none of these tags |
 | `range(n)` / `range(supplier)` | boxes within reach of the origin, measured to the nearest point |
 | `fov(degrees)` | boxes whose centre is inside a cone around the local player's view |
-| `minTicksTracked(n)` / `maxTicksTracked(n)` | entities seen for long enough, or recently enough |
-| `where(attribute, test)` | entities whose attribute passes; missing counts as failing |
-| `where(predicate)` | anything else; runs last |
-| `excludeFriends()` | everyone not on the friends list |
+| `minTicksTracked(n)` / `maxTicksTracked(n)` | entities tracked for long enough, or recently enough |
+| `where(predicate)` | entities whose game object passes; runs after the built-ins |
+| `whereTracked(predicate)` | entities whose measurements pass — velocity, box, ticks tracked |
 
-Filters run cheapest first: category (the range query only visits the ones
-selected), then tags (one AND per 64 tags you declared, however many a
-selector lists), ticks tracked, range, friends, field of view (a dot product
-against `cos(fov / 2)`, no inverse trigonometry), then your predicates.
-`toBuilder()` makes a variant.
+Filters run cheapest first: ticks tracked, range (the tracker's grid means far
+entities are never visited), field of view (a dot product against
+`cos(fov / 2)`, no inverse trigonometry), then your predicates. `toBuilder()`
+makes a variant. Friends, teams and death are questions about your game, so they
+are your tracker's `accepts` or your `where`.
 
 `TargetSort` ranks by a score per candidate, lowest first, so choosing the best
 is one pass and not a sort. Core ships only what means the same in any world —
-`DISTANCE`, `ANGLE`, `NEWEST`, `OLDEST` — and everything else is yours:
-`TargetSort.by(Stats.HEALTH)`, `TargetSort.by(e -> ...)`, or a lambda over the
-entity and the query's `TargetContext`. Any of them can be `reversed()`; an
-entity missing the attribute being sorted on ranks last either way. Ties go to
-the nearer box.
+`DISTANCE`, `ANGLE`, `NEWEST`, `OLDEST` — and everything else reads the game's
+object: `TargetSort.by(EntityLivingBase::getHealth)`, or a lambda over the
+`Tracked<E>` and the query's `TargetContext`. Any of them can be `reversed()`; a
+key that returns `NaN` ranks last either way. Ties go to the nearer box.
 
 ```java
 Core.targets().best(enemies);                       // or null
@@ -2246,7 +2399,7 @@ Core.targets().all(enemies, 3);                     // three best, in order
 Core.targets().count(enemies);
 Core.targets().forEach(enemies, e -> ...);          // unsorted, allocates nothing
 Core.targets().best(crystals, enemy.getPosition()); // measured from another point
-Core.targets().accepts(enemies, entity);            // O(1), one entity
+Core.targets().accepts(enemies, tracked);           // O(1), one entity
 ```
 
 Selectors nest: a `where` predicate may run a query of its own ("players with
@@ -2254,11 +2407,11 @@ two or more monsters beside them"), and each query gets its own working state.
 
 ### Locks
 
-`Core.targets().lock(selector)` returns a `TargetLock`. `update()` once a tick
-keeps the held target for as long as it passes the selector (an O(1) check)
-and searches only when it stops, so a module does not flick between two
+`Core.targets().lock(selector)` returns a `TargetLock<E>`. `update()` once a
+tick keeps the held target for as long as it passes the selector (an O(1)
+check) and searches only when it stops, so a module does not flick between two
 entities that trade places at the top of the ranking. `hasChanged()` says when
-it switched, `lockOn(entity)` holds one the player chose, `setSticky(false)`
+it switched, `lockOn(tracked)` holds one the player chose, `setSticky(false)`
 takes the best every tick, `release()` lets go.
 
 ### Geometry
@@ -2266,14 +2419,13 @@ takes the best every tick, `release()` lets go.
 Range is measured to the **nearest point of the box**, because that is what
 reaching something means in any world with boxes: an entity whose position is
 four blocks away and whose box is two wide is three away. `Box` has
-`closestPoint`, `distanceTo` and `inset`, and `TrackedEntity` has
-`distanceToBox`, `closestPoint` and `aimPoint(from, inset)` — the nearest point
-of the box shrunk by `inset`, so a ray aimed there lands inside instead of
-grazing an edge. How much reach and how much inset are both yours: Core has no
-default for either.
+`closestPoint`, `distanceTo` and `inset`, and `Tracked` has `distanceToBox`,
+`closestPoint` and `aimPoint(from, inset)` — the nearest point of the box shrunk
+by `inset`, so a ray aimed there lands inside instead of grazing an edge. How
+much reach and how much inset are both yours: Core has no default for either.
 
 ```java
-TrackedEntity self = Core.entities().getSelf();
+Tracked<?> self = Core.entities().getSelf();
 if (target.distanceToBox(self.getEyePosition()) <= reach.getDouble()) {
     Vec3 aim = target.aimPoint(self.getEyePosition(), 0.05);
     Core.rotations().request(this, self.getEyePosition().rotationTo(aim));
@@ -2282,33 +2434,32 @@ if (target.distanceToBox(self.getEyePosition()) <= reach.getDouble()) {
 
 ### Cost
 
-With n entities, n<sub>c</sub> in a category, k candidates a query visits and m
-that pass:
+With n entities in the world, n<sub>t</sub> in a tracker, k candidates a query
+visits and m that pass:
 
 | Operation | Cost |
 |---|---|
-| refresh, once a tick | O(n), nothing allocated for entities already known |
-| `ofCategory(category)` | O(1), a live view |
-| range query over a small category (≤ `setScanLimit`, 32 unless changed) | O(n<sub>c</sub>), a plain scan |
-| range query over a larger one | O(b + k) through that category's `SpatialGrid`, b buckets the radius covers |
+| refresh, once a tick | O(n) class lookups; an entity is read once however many trackers want it, and not at all if none do |
+| per tracker | O(n<sub>t</sub>), nothing allocated for entities already tracked |
+| `get`, `contains`, `track`, `accepts`, a lock keeping its target | O(1) |
+| range query over a small tracker (≤ `setScanLimit`, 32 unless changed) | O(n<sub>t</sub>), a plain scan |
+| range query over a larger one | O(b + k) through the tracker's `SpatialGrid`, b buckets the radius covers |
 | `best`, `count`, `forEach` | O(k), one pass, no allocation |
 | `all` | O(k + m log m), over candidates pooled between calls |
-| `accepts`, and a lock keeping its target | O(1) |
 
-A category's grid is built on the first range query of the tick that needs
-one, in O(n<sub>c</sub>), and not at all on a tick with no such query, so a
-module that looks at one category never pays to index the others. The grid
-indexes positions, so each category's search is widened by the furthest any box
-reached from its position that tick and every candidate is measured exactly.
-`setCellSize` tunes it; near the radius you query most is best. The suite
-checks 450 random queries against a brute-force scan, at two cell sizes.
+A tracker's grid is built on the first range query of the tick that needs one,
+in O(n<sub>t</sub>), and not at all on a tick with no such query. The grid
+indexes positions, so the search is widened by the furthest any box reached from
+its position that tick and every candidate is measured exactly. `setCellSize`
+tunes it; near the radius you query most is best. The suite checks 450 random
+queries against a brute-force scan, at two cell sizes.
 
 Game thread only, like the tick it refreshes on.
 
 ### Not using any of this
 
-Install no `EntitySource` and `Core.entities()` is empty, `getSelf()` is null,
-and every targeting query answers null, empty or zero.
+Install no `EntitySource` or register no tracker and nothing is read:
+`getSelf()` is null and every targeting query answers null, empty or zero.
 
 ---
 
@@ -2317,6 +2468,7 @@ and every targeting query answers null, empty or zero.
 | Package | What it is |
 |---|---|
 | `event` / `event.bus` / `event.impl` | Bases, `@Subscribe`, the bus, built-in events |
+| `hook` | `GameHooks` (`Core.hooks()`) — every moment the adapter tells Core about, one method each; counts them, warns when one something needs never fires, and `verify()` for your development build. See §14 |
 | `module` | `Module`, `@ModuleInfo`, `Category`, `ModuleRegistry`, `ThreadedModule` (a module whose work runs off the game thread) |
 | `setting` / `setting.impl` | Settings, auto-discovery, the nine types |
 | `layout` | Geometry and the box model, shared by the HUD and the GUI and depending on neither: `Bounds`, `Size`, `Shape`, `Content`, `Align`, `Draw` |
@@ -2324,7 +2476,10 @@ and every targeting query answers null, empty or zero.
 | `gui` / `gui.setting` / `gui.click` | The click GUI and the pieces it is built from: `Component`, `Panel`, `Screen`, `GuiService`, `GuiStyle`, the nine `SettingRenderer`s, and `ClickGuiScreen` |
 | `registry` | Generic `Registry<T>` — one class replacing four hand-written managers |
 | `service` | `Service` + `ServiceContainer`: subsystems declare `dependsOn()`, Core orders startup and shuts down in reverse |
-| `config` | JSON profiles. A `ConfigSection` is one block of the file; add your own to persist anything |
+| `config` | `ConfigService`, `ConfigSection`, `ConfigLocation`, `ConfigLoadEvent` — JSON profiles, a folder each, one file per section, at the location you choose (per profile or shared, folders allowed). Atomic saves, unreadable files kept aside. See §1 |
+| `config.section` | Ready-made sections: `SettingsSection` (one `SettingHolder`) and `ToggleableSection` (a registry of modules or elements, by name) |
+| `config.crypto` | Optional encryption: `ConfigCipher`, the interface you implement, and `AesGcmCipher`, AES-GCM from the JDK with passphrase key derivation |
+| `config.io` | `Json` — the shared Gson instance, atomic file writes, and `child(...)` for reading nested objects |
 | `command` | `Command`, `@CommandInfo`, typed `CommandContext`, chat dispatch |
 | `input` | `Key` / `MouseButton` / `Modifier` / `Bind` — Core's own enums, not LWJGL ints, so a bind saved on 1.8.9 loads on 1.21. `InputService` routes presses to module binds |
 | `render` | `Render` facade, `Render2D` / `Render3D` SPIs, `Color`, `Texture` |
@@ -2337,13 +2492,13 @@ and every targeting query answers null, empty or zero.
 | `movement.simulation` | `SimulationService` — `Simulation` (the real movement rules, axis-separated collision, step-up) over a one-method `CollisionSpace`, plus `MotionTracker` / `MotionTrack` (bounded history per opaque key), `DriftMonitor` (scores the model against the game every tick and says when to stop trusting it), `PhysicsCalibration` (offline: measure the gap, sweep a constant to close it) and the `MotionState` / `MovementInput` values they pass around |
 | `movement.timeline` | `TimelineRecorder` — records packets, ticks and the player's movement between two points in time, in one exactly-ordered `Timeline` of `TimelineEntry`s, with queries for links, replies and correlation. Reads packets through the describer on `Core.network()`; `TimelineJson` reads and writes JSON Lines |
 | `network` | `NetworkService` — where the adapter's packets come in: holds the one `PacketDescriber`, picks each packet's arrival, describes it once and hands it to every `PacketListener`. See §11 |
-| `network.packet` | The packet vocabulary everything above shares: `PacketDescriber` (the one-method SPI your adapter writes), `PacketDescription` with factories for the packets the services read, `PacketKind`, `PacketFields`, and `ClassPacketDescriber` (a describer built from one rule per class) |
-| `network.tps` | `TpsService` over `TpsTracker` — the server's tick rate from its world clock, smoothed, stall-aware |
+| `network.packet` | The packet vocabulary everything above shares: `PacketDescriber` (the one-method SPI your adapter writes), `PacketDescription` with the roles the services read (`withWorldAge`, `withTransaction`, `withLatency`, `withBrand`, `withChannels`, `asCorrection`), `PacketKind` (the interface your own kinds implement), `PacketFields`, and `ClassPacketDescriber` (a describer built from one rule per class) |
+| `network.tps` | `TpsService` over `TpsTracker` — the server's tick rate from its world clock, measured with no rate assumed, smoothed, stall-aware, capped by a target only if you set one |
 | `network.lag` | `LagService` — ping, packet rates, and `LagSpikeEvent` when the server goes silent |
-| `network.server` | `ServerService` — address, `ServerBrand` (software and proxy), `ServerSoftware`, channels, `ServerChangeEvent` |
-| `network.anticheat` | `AntiCheatService` — ranks `Detection`s from registered `AntiCheatSignature`s over `ServerEvidence`, including the `TransactionPattern` a `TransactionTracker` reads off inbound transactions |
-| `entity` | `EntityService` — the world as of this tick: every `TrackedEntity`, read through the adapter's one `EntitySource` and indexed per category (a `SpatialGrid` each, built only when queried). `EntityCategory`, `EntityTag` and `EntityAttribute` are the interfaces your own vocabulary implements; `EntityData` is what the source writes; `TagSet` tests many tags in one AND. See §12 |
-| `target` | `TargetService` — runs `TargetSelector`s (filters built once, run cheapest first) ranked by a `TargetSort`, from the player's eyes or any point; `TargetLock` holds a choice across ticks |
+| `network.server` | `ServerService` — address, `ServerBrand` (raw brand, software and proxy), the `ServerSoftware` you register, channels, `ServerChangeEvent` |
+| `network.anticheat` | `AntiCheatService` — ranks `Detection`s from the `AntiCheatSignature`s you register (none ship) over `ServerEvidence`, including the `TransactionPattern` a `TransactionTracker` reads off packets given `withTransaction` |
+| `entity` | `EntityService` — reads the world once a tick through the adapter's one `EntitySource` and routes each entity by class to the `EntityTracker<E>`s you register, typed by the game's own classes. Each tracker holds a `Tracked<E>` per entity (the game's object plus position, box, velocity, ticks tracked) and a `SpatialGrid` built only when queried. See §12 |
+| `target` | `TargetService` — runs a `TargetSelector<E>` over one tracker (filters built once, run cheapest first, predicates on the game's own object) ranked by a `TargetSort`, from the player's eyes or any point; `TargetLock` holds a choice across ticks |
 | `math` | `Vec2`, `Vec3`, `Vec3i` (the block grid), `Direction`, `Box`, `Range`, `MathUtil`, `Stopwatch` (cooldowns) |
 | `util` | `Validate`, `Reflect`, `CoreLogger` / `ConsoleLogger` |
 | `util.collect` | `Pair`, `Triplet`, `CircularQueue` / `CircularDeque` (bounded histories that never grow), `RollingAverage` (allocation-free smoothing for FPS / ping / CPS), `LruCache` / `ExpiringCache` (bounded by size and by age), `Trie` (prefix completion), `WeightedList` |
@@ -2355,7 +2510,7 @@ and every targeting query answers null, empty or zero.
 | `util.net` | `Http` — blocking one-shot GET/POST for update checks and small APIs. Run it on `ThreadService` |
 | `notification` | On-screen toast queue. Core owns the lifecycle; you draw them |
 | `concurrent` | `ThreadService` — three tiers (one-shot workers, timers, dedicated loop threads) plus the game-thread queue; `TaskHandle` for cancelling a loop. Task exceptions are logged, not swallowed. See §8 |
-| `social` | Friends list, consulted by targeting / nametags / chat |
+| `social` | Friends list, for your trackers' `accepts`, nametags and chat to consult |
 | `account` | Alt manager. `AuthProvider` is the SPI you implement for Microsoft login |
 | `integration` | Optional external hooks: **Discord Rich Presence** (`PresenceProvider`) and **now-playing / Spotify** (`MediaProvider`). Both polled off-thread; absent providers are simply inert |
 | `platform` | The narrow game seam: data directory, screen size, chat, username, in-game flag. **Not** the adapter layer — no player, world, entity, or packets |
@@ -2379,11 +2534,8 @@ here, and the whole package is tested against mazes written as string literals.
 2. **`Render2D`** — your 2D library
 3. **`Render3D`** — world drawing and projection
 4. **`FontProvider`** — font loading for that backend
-5. **Event bridging** — post Core's events from your mixins. `InputService`
-   wants `KeyEvent` and `MouseEvent` for module keybinds, `CommandRegistry` wants
-   `ChatSendEvent` to intercept commands, and the network services in §11 want
-   `PacketEvent`, `WorldEvent` and `TickEvent`. Post the rest for your own
-   modules to subscribe to.
+5. **Game hooks** — call `Core.hooks()` from your mixins. It is the whole
+   list of moments Core needs to hear about; see *Game hooks* below.
 6. **A per-frame `Core.hud().drawAll(...)`** from your render hook, and, if you
    want edit mode, a screen that routes input into `HudEditor` and draws
    `HudEditorView`. Elements describe themselves, so there is nothing else to
@@ -2393,28 +2545,95 @@ here, and the whole package is tested against mazes written as string literals.
    when dismissed. Core neither draws it nor listens for it. Skip this entirely if
    you are writing your own interface; see *Not using any of this* in §7.
 
-Nothing extra is needed for threading: Core drains the game-thread queue from
-`TickEvent`, so posting ticks (step 5) covers it. An adapter that does not post
-them calls `Core.threads().runPendingSync()` from its game loop instead; see §8.
+Nothing extra is needed for threading: Core drains the game-thread queue on
+every tick, so calling the tick hooks (step 5) covers it. An adapter that does
+not calls `Core.threads().runPendingSync()` from its game loop instead; see §8.
 
 Optional: `RotationSink` if you want Core arbitrating rotations — two methods,
 and modules stop fighting over the head; `CollisionSpace` if you want movement
 simulation — one method, and the motion tracker works without it; `ShaderBackend` if you use `shader` —
 one class of ordinary GL, and nothing else in Core notices whether it exists; `AuthProvider` (alt manager),
-`PresenceProvider` / `MediaProvider`, a `PacketDescriber` on `Core.network()` plus `PacketEvent` posts if you want
-TPS, ping, server and anticheat detection — see §11 — an `EntitySource` plus your own categories, tags and
-attributes if you want `Core.entities()` and targeting — see §12 — and `MotionUpdateEvent` posts on top if you want
+`PresenceProvider` / `MediaProvider`, a `PacketDescriber` on `Core.network()` with your own packet kinds plus `PacketEvent`
+posts if you want TPS, ping, server and anticheat detection — and your server software and anticheat signatures, since
+none ship — see §11 — an `EntitySource` plus trackers of the game's own
+types if you want `Core.entities()` and targeting — see §12 — and `MotionUpdateEvent` posts on top if you want
 timeline recordings — see §10, and `PathSpace` if you use `util.spatial` — one lambda saying which cells your agent
 can occupy is enough to run `AStar` against your world.
 
 Core runs headless without any of these. The test suite boots it with none
 installed, which is how the seam stays honest.
 
+### Game hooks
+
+Core never hooks the game. Your mixins call one method on `Core.hooks()` at
+each moment below, and it posts the event Core's services and your modules
+listen for. If one is never called, whatever listens for it goes idle — so
+Core tells you instead of failing silently.
+
+```java
+@Inject(method = "runTick", at = @At("HEAD"))   private void head(CallbackInfo ci) { Core.hooks().tickStart(); }
+@Inject(method = "runTick", at = @At("RETURN")) private void tail(CallbackInfo ci) { Core.hooks().tickEnd(); }
+
+@Inject(method = "sendPacket", at = @At("HEAD"), cancellable = true)
+private void send(Packet<?> packet, CallbackInfo ci) {
+    if (Core.hooks().packetSent(packet)) ci.cancel();          // true when a handler cancelled it
+}
+```
+
+| Call | When | Idle without it, in Core |
+|---|---|---|
+| `tickStart()` / `tickEnd()` | head and tail of every game tick | entities, rotations, simulation, lag spikes, server and anticheat events, timeline ticks, `threads().sync(...)` |
+| `worldLoaded(address)` / `worldUnloaded()` | joining and leaving a world | server, TPS, lag, entities |
+| `packetReceived(p)` / `packetSent(p)` | each inbound packet decoded / outbound packet written | TPS, lag, server, anticheat, timeline |
+| `packetApplied(p)` | optional: as an inbound packet's handler runs, same instance | timeline queue times |
+| `motionPre(...)` / `motionPost(...)` | around the client's movement report | timeline motion entries |
+| `key(...)` / `mouse(...)` | every press and release | module keybinds |
+| `chatSend(message)` | before the player's chat is sent | commands |
+| `scroll`, `charTyped`, `chatReceived`, `screen`, `render2D`, `render3D` | as named | nothing in Core — your modules |
+
+The cancellable ones return whether a handler cancelled them; the chat ones
+return the event, since a handler may rewrite the message. `render2D` is for
+your modules' drawing and does **not** draw the HUD — that is still
+`Core.hud().drawAll()`, step 6. Posting the events yourself still works; Core
+counts them however they arrive.
+
+**It warns.** Ticks, the world, packets, motion and rendering fire the whole
+time the player is in a world, so their absence can be seen: once
+`Platform.isInGame()` has been true for five seconds (`setGracePeriodMillis`),
+Core logs one warning per hook that something is listening for and that has
+never fired, naming the call to make and everything idle without it:
+
+```
+No TickEvent after 5s in a world, so these are idle: Core, ServerService, EntityService, RotationService,
+SimulationService, LagService, AntiCheatService, KillAura. Call Core.hooks().tickStart() and tickEnd(),
+around every game tick from your adapter (or post TickEvent yourself).
+```
+
+"Needed" means something is listening right now — Core's services, or your
+modules while enabled — so a hook nothing uses never warns, and the motion hook
+only matters while a timeline is recording.
+
+**It verifies.** Keys, mouse and chat fire only when the player acts, so their
+absence proves nothing at runtime. In your development build, play for a few
+seconds, press a key, click, send a chat message, then:
+
+```java
+Core.hooks().verify();                       // throws, listing every needed hook that never fired
+Core.hooks().verify(Hook.KEY, Hook.MOUSE);   // or exactly these, needed or not
+Core.hooks().report().forEach(System.out::println);
+//  TICK         4211x    Core, ServerService, EntityService, ...
+//  KEY          MISSING  InputService, KillAura
+//  SCREEN       unused   -
+```
+
+Core never throws on its own: a hook can only be judged missing over time, and
+a client that skips one should lose the features that need it, not crash.
+
 ---
 
 ## 15. Verifying
 
-`dev.px.core.test.CoreSmokeTest` runs **1503 checks** in a plain JVM — no
+`dev.px.core.test.CoreSmokeTest` runs **1647 checks** in a plain JVM — no
 Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
@@ -2443,12 +2662,14 @@ src/test/java/dev/px/core/test/
 | `ShaderTests` | include inlining and include-once, version hoisting, defines, uniform recording for every type, compile-on-first-use, bind/unbind pairing and nesting, a throwing draw, a broken shader contained and logged once, reload, a lost context |
 | `MovementTests` | that corrected input travels where the player asked, swept over every facing, key pair and applied rotation: strict rounding never off by more than half a key step and never emitting a value a keyboard could not, exact rounding not off at all |
 | `SimulationTests` | walk, sprint, sneak and jump against the figures Minecraft is measured at (not against our own constants); landing on a floor rather than through it, a forty-block-a-tick fall not tunnelling, walls stopping the blocked axis only, half-height ledges stepped onto and full blocks not, ice sliding further, one world query per tick; drift going to zero on a matching world, spiking on a mismatched one and naming the axis, teleports excluded; calibration recovering a planted constant it was never told; and for the tracker: ring wrapping, a missed tick averaged not doubled, eviction |
-| `TimelineTests` | exact entry order including packets sent from inside tick handlers, gapless seq and monotonic time with four threads posting packets against ticks, received and applied halves linked by instance and not equality, corrections following applied teleports and velocity, reply finding by time window and by correlation key, marks, filters and capacity, a throwing describer contained and logged once, JSON Lines round-tripping equal, and no subscription at all while idle |
-| `NetworkTests` | describer factories and class rules (exact, parent, interface, fallback); TPS from steady, slow and network-bunched clocks, pulled down by an overdue update, re-baselined on a world-age leap; each packet heard once whether posted RECEIVED, APPLIED or both, cancelled sends dropped and cancelled receives kept, throwing describers and listeners contained and logged once; packet rates, ping and jitter, lag spikes starting, growing, ending with their duration, and ending on leave; addresses and IPv6, domain matching without lookalikes, brands behind BungeeCord, Waterfall and Velocity; a config-phase brand held until join, one change event per tick; transaction countdowns through a wrap, anticheat ranking, signatures that throw, and the timeline reading through the network's describer |
-| `TargetingTests` | a vocabulary declared by the test, not Core: over a hundred tags across several words, value-equal tags, and nothing assumed when the source writes nothing (uncategorised, no volume, eyes at the position, attributes NaN); one object per entity with velocity and ticks tracked, untracked on leaving and never recycled, tags and attributes rewritten each tick, a throwing source contained; range to the box not the position, and 450 random grid queries against a brute-force scan at two cell sizes; nothing excluded by default but the local player, tag and attribute filters, range read live, field of view turning with the player, every sort with missing attributes last both ways, limits, origins, a query nested in a filter, sticky and greedy locks, box distance, inset and aim points
+| `TimelineTests` | exact entry order including packets sent from inside tick handlers, gapless seq and monotonic time with four threads posting packets against ticks, received and applied halves linked by instance and not equality, corrections following whichever applied packets the describer marked as corrections, kinds stored and matched by name, reply finding by time window and by correlation key, marks, filters and capacity, a throwing describer contained and logged once, JSON Lines round-tripping equal, and no subscription at all while idle |
+| `NetworkTests` | the test's own packet kinds, server software and signatures, since Core ships none; roles on descriptions and class rules (exact, parent, interface, fallback); TPS measured with nothing assumed — NaN before a measurement, a 60-tick game read as 60 unconfigured, bunched clocks adding up and capped only by a target you set, pulled down by an update overdue against the server's own pace, re-baselined on a world-age leap, an update without an age ignored; each packet heard once whether posted RECEIVED, APPLIED, both, or mixed per packet, cancelled sends dropped and cancelled receives kept, throwing describers and listeners contained and logged once; packet rates, ping and jitter, lag spikes starting, growing, ending with their duration, and ending on leave; addresses with no port assumed and IPv6, domain matching without lookalikes; brands matched by whole word against registered software, proxy and server found independently behind BungeeCord, Waterfall and Velocity, priority by registration, nothing recognised with nothing registered and re-read when software is registered later; a connecting-phase brand held until join, one change event per tick; transaction countdowns through a wrap, no detection without signatures, your rates deciding, anticheat ranking, signatures that throw, the evaluation interval, the declared dependency on the server service; and the timeline reading through the network's describer |
+| `TargetingTests` | trackers typed by the test's own entity classes: routing by class, interface and subclass, overlapping trackers reading each entity once and never reading one nobody wants, the local player in none; the game's object back with no cast, and zero rather than any game's numbers when the source leaves something out; one object per entity per tracker with velocity and ticks tracked, untracked on leaving or on no longer being accepted and never recycled, with hooks firing once each way; `track` and `forget` between ticks, including `track` from a hook in the middle of a refresh; throwing sources, `accepts` and hooks contained and logged once; range to the box not the position, and 450 random grid queries against a brute-force scan at two cell sizes; selectors by class built before their tracker exists, filters on the game's object and on measurements, range read live, field of view turning with the player, every sort with missing values last both ways, limits, origins, a query nested in a filter, sticky and greedy locks refusing another tracker's entity, box distance, inset and aim points |
+| `HookTests` | every hook posting its event in the right stage and reporting cancellation, chat handing back a rewritten message; counting however an event was posted, cancelled packets included, inbound and outbound apart; listeners named after the class that owns them or registered them, disabled modules and catch-all handlers left out; the self-check silent out of a world, within the grace period, for hooks that fire, hooks nothing needs and hooks that fire only on player input, then warning once with what is idle and the call to make, a late need getting its own grace period, a throwing platform contained; `verify()` listing needed hooks that never fired and `verify(hooks)` exactly the ones named; and the booted client naming Core's own services as what idles without ticks, keys, chat and packets |
 | `RotationTests` | priority arbitration, stable tie-breaking across renewals, claims expiring without release, stepped and snapped turns, the short way round 180, that reads and requests commute in any order, easing back on release, both modes, the inert no-sink path |
 | `GuiTests` | renderer lookup and replacement, tree structure, visibility gating, hit routing, every setting type edited through the GUI, the input gate, window persistence |
-| `ConfigTests` | full round-trip, profiles, second-load regression, path sanitising |
+| `ConfigStorageTests` | default and renamed layouts, sections in folders of their own, invalid paths and nested folders refused; `place` winning over registration and moving Core's sections, no two sections sharing a file even by case; profiles switching only their own sections, the last active one remembered across a restart and a deleted one falling back, profile names never leaving the folder; late registration loaded at once; no temporary files left, an unreadable file costing only its own section and copied aside before the save on exit, a never-loaded config never saved over; encryption off unless asked, plaintext gone once encrypted, the right key loading, a wrong one or none leaving the file safe, a file moved to another section's place refused; key derivation, fresh nonces, tamper detection; and the old single-file profiles converted once, shared sections from the active one, encrypted where asked, never overwriting converted files |
+| `ConfigTests` | every built-in section round-tripping through a profile folder, friends and accounts shared, a full load restoring shared sections, second-load regression, path sanitising |
 
 The `example/` package is written to be read: it is what a real client's modules,
 commands and HUD elements look like, and `TestClient.boot()` is the canonical
@@ -2458,4 +2679,4 @@ bootstrap minus the render backends.
 
 ## Not yet included
 
-- **Adapter layer** — `Player`, `World`, packet wrappers. (Packets reach Core only as opaque objects in `PacketEvent`, read through the adapter's `PacketDescriber`; entities only as `TrackedEntity` snapshots written by the adapter's `EntitySource`.)
+- **Adapter layer** — `Player`, `World`, packet wrappers. (Packets reach Core only as opaque objects in `PacketEvent`, read through the adapter's `PacketDescriber`; entities only as the type parameter of a client's `EntityTracker`, located through the adapter's `EntitySource`.)

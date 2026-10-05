@@ -8,29 +8,29 @@ import dev.px.core.network.NetworkService;
 import dev.px.core.network.PacketListener;
 import dev.px.core.network.packet.PacketDescription;
 import dev.px.core.network.packet.PacketFields;
-import dev.px.core.network.packet.PacketKind;
 import dev.px.core.service.Service;
 import dev.px.core.util.Validate;
 
 import java.util.Objects;
 
 /**
- * The server's tick rate, as {@link TpsTracker} estimates it from the world
+ * The server's tick rate, as {@link TpsTracker} estimates it from the server's
  * clock.
  *
  * <pre>{@code
- * double tps = Core.tps().getTps();                    // 19.8
- * if (Core.tps().getTps() < 15) slowDown();            // pace to the server, not the wall clock
+ * Core.tps().setTargetTps(20);                          // optional: your game's rate, to cap the estimate
+ * double tps = Core.tps().getTps();                     // 19.8
+ * if (Core.tps().getTps() < 15) slowDown();             // pace to the server, not the wall clock
  * }</pre>
  *
  * <p><b>What the adapter supplies:</b> {@code PacketEvent} posts, and a describer
- * that classifies the world-time packet with
- * {@link PacketDescription#timeUpdate}. Nothing else. Until one arrives,
- * {@link #getTps()} reports a healthy {@link TpsTracker#VANILLA_TPS} and
- * {@link #hasEstimate()} says it is only an assumption.
+ * that gives the server's clock packet {@link PacketDescription#withWorldAge}.
+ * Nothing else is required. Core assumes no tick rate: until two clock updates
+ * have arrived, {@link #getTps()} reports the target you set, or NaN with none,
+ * and {@link #hasEstimate()} is false.
  *
  * <p>Forgets its measurements on leaving a server, and on joining a different
- * one, so one server's lag never shows on the next.
+ * one, so one server's lag never shows on the next. The target is kept.
  */
 public final class TpsService implements Service {
 
@@ -81,9 +81,10 @@ public final class TpsService implements Service {
     }
 
     /**
-     * @return ticks per second, smoothed over about ten seconds and pulled down
-     *         at once if the server stops sending the time. Never above
-     *         {@link #getTargetTps()}
+     * @return ticks per second, smoothed over the last few clock updates and
+     *         pulled down at once if the server stops sending them. Never above
+     *         {@link #getTargetTps()} when one is set; before a measurement, the
+     *         target, or NaN with none
      */
     public double getTps() {
         return tracker.getTps(network.nanoTime());
@@ -104,21 +105,27 @@ public final class TpsService implements Service {
         return tracker.getMillisSinceUpdate(network.nanoTime());
     }
 
-    /** @return how many milliseconds a server tick is taking, from {@link #getTps()} */
+    /** @return how many milliseconds a server tick is taking, from {@link #getTps()}; NaN when that is */
     public double getTickMillis() {
         return 1000d / getTps();
     }
 
+    /** @return the rate you said the server runs at, or NaN when you have not */
     public double getTargetTps() {
         return tracker.getTargetTps();
     }
 
     /**
-     * For 1.20.3+ servers that change their rate with {@code /tick rate}. Call it
-     * from the adapter when the tick-rate packet arrives.
+     * The rate your game's server is meant to run at. Optional: it caps the
+     * estimate and stands in for it before the first measurement. Call it again
+     * from the adapter whenever the server announces a different rate.
      */
     public void setTargetTps(double targetTps) {
         tracker.setTargetTps(targetTps);
+    }
+
+    public void clearTargetTps() {
+        tracker.clearTargetTps();
     }
 
     /** The estimator itself, for reading it on a clock of your own. */
@@ -130,11 +137,10 @@ public final class TpsService implements Service {
 
         @Override
         public void onInbound(PacketDescription packet, long nanos) {
-            if (packet.getKind() != PacketKind.TIME_UPDATE) {
-                return;
-            }
             Long age = packet.getLong(PacketFields.WORLD_AGE);
-            tracker.update(nanos, age != null ? age : -1L);
+            if (age != null) {
+                tracker.update(nanos, age);
+            }
         }
     }
 

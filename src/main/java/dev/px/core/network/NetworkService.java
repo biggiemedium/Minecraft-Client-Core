@@ -4,12 +4,15 @@ import dev.px.core.event.EventBus;
 import dev.px.core.event.Subscribe;
 import dev.px.core.event.Subscription;
 import dev.px.core.event.impl.PacketEvent;
+import dev.px.core.event.impl.WorldEvent;
 import dev.px.core.network.packet.PacketDescriber;
 import dev.px.core.network.packet.PacketDescription;
 import dev.px.core.service.Service;
 import dev.px.core.util.CoreLogger;
 import dev.px.core.util.Validate;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,16 +44,17 @@ import java.util.function.LongSupplier;
  * <ol>
  *   <li><b>Picks the arrival.</b> An inbound packet may be posted twice, RECEIVED
  *       and then APPLIED. Listeners hear about it once, on RECEIVED, which is when
- *       it actually arrived. An adapter that only ever posts APPLIED still works:
- *       until the first RECEIVED is seen, APPLIED counts as arrival.
+ *       it actually arrived. A packet posted only APPLIED counts as arriving then,
+ *       so an adapter that posts both phases for some packets and one for others
+ *       loses nothing.
  *   <li><b>Describes it once</b>, with failures contained: a describer that
  *       throws or returns null costs that packet its description, is logged once,
  *       and the packet is passed on as {@link PacketDescriber#DEFAULT} names it.
  *   <li><b>Passes it to every {@link PacketListener}</b>, in registration order.
  * </ol>
  *
- * <p><b>With no describer installed</b>, packets still flow, each classified
- * {@code OTHER}. That is enough for {@code Core.lag()}, which needs arrivals and
+ * <p><b>With no describer installed</b>, packets still flow, each filed under
+ * {@code PacketKind.OTHER} with no roles. That is enough for {@code Core.lag()}, which needs arrivals and
  * not meanings; TPS, brand and anticheat detection wait for a describer.
  */
 public final class NetworkService implements Service {
@@ -70,7 +74,14 @@ public final class NetworkService implements Service {
     /** Null when the adapter installed none. */
     private volatile PacketDescriber describer;
     private volatile boolean warnedAboutDescriber;
-    private volatile boolean sawReceived;
+
+    /**
+     * Inbound packets heard on RECEIVED whose APPLIED post has not come yet, by
+     * identity, so that post is not heard twice. A cancelled receive is never
+     * applied and is not kept; anything left over is dropped on leaving a world.
+     */
+    private final Set<Object> awaitingApply =
+            Collections.newSetFromMap(Collections.synchronizedMap(new IdentityHashMap<Object, Boolean>()));
 
     public NetworkService(CoreLogger logger, EventBus bus) {
         this(logger, bus, System::nanoTime);
@@ -96,6 +107,7 @@ public final class NetworkService implements Service {
     @Override
     public void stop() {
         bus.unsubscribe(listener);
+        awaitingApply.clear();
     }
 
     // ----------------------------------------------------------- describer
@@ -174,11 +186,13 @@ public final class NetworkService implements Service {
                 }
                 break;
             case RECEIVED:
-                sawReceived = true;
+                if (!event.isCancelled()) {
+                    awaitingApply.add(event.getPacket());
+                }
                 dispatch(event.getPacket(), true);
                 break;
             case APPLIED:
-                if (!sawReceived) {
+                if (!awaitingApply.remove(event.getPacket())) {
                     dispatch(event.getPacket(), true);
                 }
                 break;
@@ -218,6 +232,14 @@ public final class NetworkService implements Service {
         @Subscribe(priority = Integer.MIN_VALUE, receiveCancelled = true)
         private void onPacket(PacketEvent event) {
             packet(event);
+        }
+
+        @Subscribe
+        private void onWorld(WorldEvent event) {
+            if (event.isUnloaded()) {
+                // Whatever was received and never applied will not be now.
+                awaitingApply.clear();
+            }
         }
     }
 }

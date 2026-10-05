@@ -6,7 +6,7 @@ import dev.px.core.layout.Size;
 
 import com.google.gson.JsonObject;
 import dev.px.core.config.ConfigSection;
-import dev.px.core.config.Json;
+import dev.px.core.config.io.Json;
 import dev.px.core.math.MathUtil;
 import dev.px.core.platform.Platform;
 import dev.px.core.registry.Registry;

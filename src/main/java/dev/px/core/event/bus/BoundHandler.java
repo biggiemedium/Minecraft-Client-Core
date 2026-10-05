@@ -23,8 +23,12 @@ final class BoundHandler {
     private final boolean receiveCancelled;
     private final boolean ignoreListening;
 
+    /** For a {@code bus.on(...)} handler, the class that registered it; null otherwise. */
+    private final String registeredBy;
+
     BoundHandler(Object owner, HandlerMethod method) {
         this.owner = owner;
+        this.registeredBy = null;
         this.method = method;
         this.lambda = null;
         this.eventType = method.getEventType();
@@ -34,8 +38,9 @@ final class BoundHandler {
         this.ignoreListening = method.isIgnoreListening();
     }
 
-    BoundHandler(Object owner, Class<?> eventType, int priority, Consumer<Object> lambda) {
+    BoundHandler(Object owner, Class<?> eventType, int priority, Consumer<Object> lambda, String registeredBy) {
         this.owner = owner;
+        this.registeredBy = registeredBy;
         this.method = null;
         this.lambda = lambda;
         this.eventType = eventType;
@@ -56,6 +61,26 @@ final class BoundHandler {
             return false;
         }
         return ignoreListening || !(owner instanceof Listenable) || ((Listenable) owner).isListening();
+    }
+
+    /** @return whether the owner is listening now, so this would run for an event of its type */
+    boolean isLive() {
+        return ignoreListening || !(owner instanceof Listenable) || ((Listenable) owner).isListening();
+    }
+
+    /** @return a readable name for whoever registered this handler */
+    String ownerName() {
+        if (method == null) {
+            return registeredBy != null ? registeredBy : "a bus.on(...) handler";
+        }
+        Class<?> type = owner.getClass();
+        // A service's private inner Listener, or an anonymous one, is named after
+        // the class that owns it. A static nested class is a class of its own.
+        while (type.getEnclosingClass() != null && (type.isAnonymousClass() || type.isLocalClass()
+                || (type.isMemberClass() && !java.lang.reflect.Modifier.isStatic(type.getModifiers())))) {
+            type = type.getEnclosingClass();
+        }
+        return type.getSimpleName();
     }
 
     void invoke(Event event) throws Throwable {

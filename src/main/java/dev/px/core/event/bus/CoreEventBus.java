@@ -1,8 +1,10 @@
 package dev.px.core.event.bus;
 
+import dev.px.core.event.CancellableEvent;
 import dev.px.core.event.Event;
 import dev.px.core.event.EventBus;
 import dev.px.core.event.Priority;
+import dev.px.core.event.StagedEvent;
 import dev.px.core.event.Subscribe;
 import dev.px.core.event.Subscription;
 import dev.px.core.util.CoreLogger;
@@ -14,6 +16,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -127,7 +130,7 @@ public final class CoreEventBus implements EventBus {
         // A fresh key object means the same lambda can be registered more than once
         // and each registration closed independently.
         Object key = new Object();
-        BoundHandler bound = new BoundHandler(key, type, priority, (Consumer<Object>) handler);
+        BoundHandler bound = new BoundHandler(key, type, priority, (Consumer<Object>) handler, registeringClass());
         synchronized (this) {
             byListener.put(key, new ArrayList<>(Collections.singletonList(bound)));
             all.add(bound);
@@ -144,6 +147,41 @@ public final class CoreEventBus implements EventBus {
             all.clear();
             lookupCache.clear();
         }
+    }
+
+    @Override
+    public List<String> listenersOf(Class<? extends Event> type) {
+        Set<String> names = new LinkedHashSet<>();
+        synchronized (this) {
+            for (BoundHandler handler : all) {
+                Class<?> declared = handler.eventType;
+                if (declared == Event.class || declared == CancellableEvent.class || declared == StagedEvent.class) {
+                    continue;
+                }
+                if (declared.isAssignableFrom(type) && handler.isLive()) {
+                    names.add(handler.ownerName());
+                }
+            }
+        }
+        return new ArrayList<>(names);
+    }
+
+    /**
+     * The simple name of the class that called {@code on(...)}, for
+     * {@link #listenersOf}: a lambda has no owner of its own to name. Read once,
+     * at registration, never per event.
+     */
+    private static String registeringClass() {
+        for (StackTraceElement frame : new Throwable().getStackTrace()) {
+            String name = frame.getClassName();
+            if (name.startsWith("dev.px.core.event.bus.") || name.equals("dev.px.core.event.EventBus")) {
+                continue;
+            }
+            String simple = name.substring(name.lastIndexOf('.') + 1);
+            int nested = simple.indexOf('$');
+            return nested > 0 ? simple.substring(0, nested) : simple;
+        }
+        return null;
     }
 
     private BoundHandler[] resolve(Class<?> eventType) {

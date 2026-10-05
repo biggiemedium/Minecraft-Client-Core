@@ -3,12 +3,14 @@ package dev.px.core;
 import dev.px.core.account.AccountService;
 import dev.px.core.command.CommandRegistry;
 import dev.px.core.concurrent.ThreadService;
+import dev.px.core.config.ConfigLocation;
 import dev.px.core.config.ConfigService;
-import dev.px.core.config.SettingsSection;
-import dev.px.core.config.ToggleableSection;
+import dev.px.core.config.section.SettingsSection;
+import dev.px.core.config.section.ToggleableSection;
 import dev.px.core.entity.EntityService;
 import dev.px.core.event.EventBus;
 import dev.px.core.event.bus.CoreEventBus;
+import dev.px.core.hook.GameHooks;
 import dev.px.core.event.Priority;
 import dev.px.core.event.Stage;
 import dev.px.core.event.impl.ClientLifecycleEvent;
@@ -110,6 +112,7 @@ public final class Core {
     private final TpsService tpsService;
     private final LagService lagService;
     private final AntiCheatService antiCheatService;
+    private final GameHooks gameHooks;
     private final EntityService entityService;
     private final TargetService targetService;
 
@@ -130,6 +133,9 @@ public final class Core {
         Module.bindBus(bus);
 
         this.threadService = services.register(new ThreadService(logger, builder.threadPoolSize));
+        // Where the adapter tells Core about the game; warns when a hook something
+        // needs is never called.
+        this.gameHooks = services.register(new GameHooks(logger, bus, platform, threadService));
         this.configService = services.register(new ConfigService(logger, bus, platform));
         this.fontService = services.register(new FontService(logger));
         this.themeService = services.register(new ThemeService());
@@ -160,10 +166,11 @@ public final class Core {
         this.lagService = services.register(new LagService(bus, networkService, platform));
         this.antiCheatService = services.register(
                 new AntiCheatService(logger, bus, networkService, serverService));
-        // Reads nothing until the adapter installs an EntitySource; targeting is
-        // queries over that snapshot and holds no state of its own.
+        // Reads nothing until the adapter installs an EntitySource and the client
+        // registers a tracker; targeting is queries over the trackers and holds
+        // no state of its own.
         this.entityService = services.register(new EntityService(logger, bus));
-        this.targetService = services.register(new TargetService(entityService, socialService));
+        this.targetService = services.register(new TargetService(entityService));
         // Subscribes to nothing until a recording begins, so registering it
         // unconditionally costs a client that never records nothing at all.
         this.timelineRecorder = services.register(new TimelineRecorder(logger, bus));
@@ -242,8 +249,9 @@ public final class Core {
         configService.register(new SettingsSection("notifications", notificationService));
         configService.register(new SettingsSection("integrations", integrationService));
         configService.register(new SettingsSection("commands", commandRegistry.getPrefix()));
-        configService.register(socialService);
-        configService.register(accountService);
+        // Who your friends and alts are does not change with the profile you play.
+        configService.register(socialService, ConfigLocation.shared("friends"));
+        configService.register(accountService, ConfigLocation.shared("accounts"));
         configService.register(hudService);
         configService.register(guiService);
     }
@@ -396,14 +404,24 @@ public final class Core {
     }
 
     /**
-     * Every entity in the world as of this tick, read through the adapter's
-     * {@link dev.px.core.entity.EntitySource} and indexed for range queries.
+     * Everything the adapter tells Core about the game: ticks, the world, packets,
+     * input, chat, rendering. Each method posts the event Core and your modules
+     * listen for, and Core warns when one something needs is never called.
+     */
+    public static GameHooks hooks() {
+        return get().gameHooks;
+    }
+
+    /**
+     * The world, read once a tick through the adapter's
+     * {@link dev.px.core.entity.EntitySource} and handed to the client's
+     * {@link dev.px.core.entity.EntityTracker}s, which are looked up here by class.
      */
     public static EntityService entities() {
         return get().entityService;
     }
 
-    /** Finding targets: selectors, sorts and locks over {@link #entities()}. */
+    /** Finding targets: selectors, sorts and locks over the trackers in {@link #entities()}. */
     public static TargetService targets() {
         return get().targetService;
     }

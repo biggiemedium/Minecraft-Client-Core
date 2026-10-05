@@ -36,8 +36,8 @@ import dev.px.core.util.time.RateMeter;
  * judged late when it lands. This service watches for the second: once nothing
  * has arrived for {@link #getSpikeThresholdMillis()}, {@link #isLagging()} turns
  * true and a {@link LagSpikeEvent} is posted, and another when traffic resumes.
- * A vanilla server sends the time every second even to an empty world, so a
- * healthy connection is never silent that long.
+ * Set the threshold longer than the longest gap your game's server leaves
+ * between packets on a healthy connection.
  *
  * <h2>What the adapter supplies</h2>
  *
@@ -52,12 +52,12 @@ import dev.px.core.util.time.RateMeter;
  * </ul>
  *
  * <p>The ping is the server's own measurement, not one taken here: a client
- * cannot time a round trip the server starts, and nothing the client starts is
- * answered promptly by a vanilla server. It is what the tab list shows.
+ * cannot time a round trip the server starts, and a game server need not answer
+ * anything the client starts promptly.
  */
 public final class LagService implements Service {
 
-    /** Silence longer than this is a spike. A vanilla server is never quiet for over a second. */
+    /** Silence longer than this is a spike, until {@link #setSpikeThresholdMillis} says otherwise. A tuning knob, not a fact about any game. */
     public static final long DEFAULT_SPIKE_THRESHOLD_MILLIS = 1500L;
 
     /** Ping reports to average and take the jitter of. */

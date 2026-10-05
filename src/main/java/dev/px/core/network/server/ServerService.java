@@ -16,15 +16,19 @@ import dev.px.core.util.Validate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Which server the player is on, and what it runs.
  *
  * <pre>{@code
+ * Core.server().registerSoftware(ServerSoftware.of("Paper"), ServerSoftware.proxy("Velocity"));  // yours
+ *
  * Core.server().isOn("hypixel.net");            // true on mc.hypixel.net
- * Core.server().getSoftware();                  // PAPER
- * Core.server().getBrand().getProxy();          // VELOCITY
+ * Core.server().getSoftware();                  // Paper
+ * Core.server().getBrand().getProxy();          // Velocity (proxy)
  * Core.server().isSingleplayer();
  * }</pre>
  *
@@ -33,19 +37,20 @@ import java.util.List;
  * <ul>
  *   <li><b>{@code WorldEvent}</b>, which it posts anyway: the address on joining,
  *       the unload on leaving.
- *   <li><b>The brand</b>, either way round: the describer classifying the brand
- *       payload with {@link PacketDescription#brand}, or the adapter calling
- *       {@link #reportBrand} with what its version already parsed &mdash;
- *       {@code EntityPlayerSP.getClientBrand()} on 1.8.9,
- *       {@code ClientPlayNetworkHandler.getBrand()} on modern Fabric.
+ *   <li><b>The brand</b>, either way round: the describer giving the packet that
+ *       carries it {@link PacketDescription#withBrand}, or the adapter calling
+ *       {@link #reportBrand} with what its version already parsed.
  *   <li>Optionally, <b>registered channels</b>, with
- *       {@link PacketDescription#channels} or {@link #reportChannels}.
+ *       {@link PacketDescription#withChannels} or {@link #reportChannels}.
+ *   <li>Optionally, <b>the {@link ServerSoftware} to recognise</b> in a brand,
+ *       with {@link #registerSoftware}. Core recognises none by itself; without
+ *       any, the raw brand is still there and the software reads
+ *       {@link ServerSoftware#UNKNOWN}.
  * </ul>
  *
- * <p>The brand may arrive before the world does &mdash; 1.20.2 and later send it
- * during the configuration phase, before the player has joined any world. It is
- * held and applied when the world loads. What was learned is forgotten on
- * leaving, not on joining, for the same reason.
+ * <p>The brand may arrive before the world does, if the game sends it while
+ * still connecting. It is held and applied when the world loads. What was learned
+ * is forgotten on leaving, not on joining, for the same reason.
  *
  * <p>Changes are announced with a {@link ServerChangeEvent} on the game thread.
  * The getters here are current immediately, from any thread.
@@ -57,6 +62,7 @@ public final class ServerService implements Service {
     private final Listener listener = new Listener();
     private final Traffic traffic = new Traffic();
     private final Object lock = new Object();
+    private final List<ServerSoftware> software = new CopyOnWriteArrayList<>();
 
     private volatile ServerInfo current = ServerInfo.DISCONNECTED;
 
@@ -148,6 +154,33 @@ public final class ServerService implements Service {
         return current.hasChannel(channel);
     }
 
+    // -------------------------------------------------------------- software
+
+    /**
+     * Adds server software to recognise in brands, in priority order: where a
+     * brand names two, the one registered first wins. A brand already received is
+     * read again.
+     */
+    public void registerSoftware(ServerSoftware... known) {
+        for (ServerSoftware each : known) {
+            software.add(Validate.notNull(each, "software"));
+        }
+        reidentify();
+    }
+
+    public boolean unregisterSoftware(ServerSoftware known) {
+        boolean removed = software.remove(known);
+        if (removed) {
+            reidentify();
+        }
+        return removed;
+    }
+
+    /** @return the software recognised in brands, in priority order */
+    public List<ServerSoftware> getKnownSoftware() {
+        return Collections.unmodifiableList(new ArrayList<>(software));
+    }
+
     // ------------------------------------------------------------ reporting
 
     /**
@@ -159,7 +192,7 @@ public final class ServerService implements Service {
         if (brand == null || brand.trim().isEmpty()) {
             return;
         }
-        ServerBrand parsed = ServerBrand.parse(brand);
+        ServerBrand parsed = ServerBrand.parse(brand, software);
         synchronized (lock) {
             if (current.isConnected()) {
                 if (!parsed.equals(current.getBrand())) {
@@ -215,6 +248,17 @@ public final class ServerService implements Service {
         }
     }
 
+    private void reidentify() {
+        synchronized (lock) {
+            if (current.getBrand() != null) {
+                current = current.withBrand(ServerBrand.parse(current.getBrand().getRaw(), software));
+            }
+            if (pendingBrand != null) {
+                pendingBrand = ServerBrand.parse(pendingBrand.getRaw(), software);
+            }
+        }
+    }
+
     private void announce() {
         ServerInfo now = current;
         if (now == announced) {
@@ -229,13 +273,13 @@ public final class ServerService implements Service {
 
         @Override
         public void onInbound(PacketDescription packet, long nanos) {
-            if (packet.isPayloadOn(PacketFields.BRAND_CHANNEL, PacketFields.LEGACY_BRAND_CHANNEL)) {
-                reportBrand(packet.getString(PacketFields.BRAND));
-            } else if (packet.isPayloadOn(PacketFields.REGISTER_CHANNEL, PacketFields.LEGACY_REGISTER_CHANNEL)) {
-                String joined = packet.getString(PacketFields.CHANNELS);
-                if (joined != null && !joined.isEmpty()) {
-                    reportChannels(Arrays.asList(joined.split(PacketFields.CHANNEL_SEPARATOR)));
-                }
+            String brand = packet.getString(PacketFields.BRAND);
+            if (brand != null) {
+                reportBrand(brand);
+            }
+            String joined = packet.getString(PacketFields.CHANNELS);
+            if (joined != null && !joined.isEmpty()) {
+                reportChannels(Arrays.asList(joined.split(PacketFields.CHANNEL_SEPARATOR)));
             }
         }
     }

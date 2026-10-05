@@ -53,9 +53,23 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Every check but the last runs on a bare bus with a hand-driven clock and
  * fake packets that are plain Java objects, which is the proof that none of this
  * needs a game: the adapter's describer is the only thing that knows what a
- * packet is, and here that describer is twenty lines of test code.
+ * packet is, and here that describer is twenty lines of test code. Its kinds,
+ * the server software it recognises and the anticheat signatures it registers
+ * are the test's own: Core ships none of them.
  */
 public final class NetworkTests {
+
+    /** The test client's own packet kinds. Nothing like this exists in Core. */
+    private enum Packets implements PacketKind { TIME, TRANSACTION, KEEP_ALIVE, PAYLOAD, TAB, MARKER, BASE, CHUNK }
+
+    /** The test client's own server software, in priority order: forks before parents. */
+    private static final ServerSoftware PURPUR = ServerSoftware.of("Purpur");
+    private static final ServerSoftware PAPER = ServerSoftware.of("Paper");
+    private static final ServerSoftware SPIGOT = ServerSoftware.of("Spigot");
+    private static final ServerSoftware FORGE = ServerSoftware.of("Forge", "forge", "fml");
+    private static final ServerSoftware VELOCITY = ServerSoftware.proxy("Velocity");
+    private static final ServerSoftware BUNGEE = ServerSoftware.proxy("BungeeCord", "bungeecord", "waterfall");
+    private static final List<ServerSoftware> SOFTWARE = Arrays.asList(PURPUR, PAPER, SPIGOT, FORGE, VELOCITY, BUNGEE);
 
     private NetworkTests() {
     }
@@ -81,34 +95,44 @@ public final class NetworkTests {
     // -------------------------------------------------------- descriptions
 
     private static void descriptions() {
-        PacketDescription time = PacketDescription.timeUpdate("S03", 1200L);
-        Checks.checkEquals("a time update is classified", PacketKind.TIME_UPDATE, time.getKind());
-        Checks.checkEquals("and carries the world age", Long.valueOf(1200L), time.getLong(PacketFields.WORLD_AGE));
+        PacketDescription time = PacketDescription.of("S03", Packets.TIME).withWorldAge(1200L);
+        Checks.check("the kind is the describer's own", time.getKind() == Packets.TIME);
+        Checks.checkEquals("and the role carries the world age", Long.valueOf(1200L), time.getLong(PacketFields.WORLD_AGE));
 
-        PacketDescription transaction = PacketDescription.transaction("S32", -7);
-        Checks.checkEquals("a transaction carries its id", Long.valueOf(-7L), transaction.getLong(PacketFields.ID));
+        PacketDescription transaction = PacketDescription.of("S32", Packets.TRANSACTION).withTransaction(-7);
+        Checks.checkEquals("a transaction carries its id", Long.valueOf(-7L), transaction.getLong(PacketFields.TRANSACTION));
         Checks.checkEquals("and a correlation key for the timeline", "transaction:-7", transaction.getCorrelationKey());
-        Checks.checkEquals("a keep-alive is its own kind", PacketKind.KEEP_ALIVE,
-                PacketDescription.keepAlive("S00", 5).getKind());
 
-        PacketDescription brand = PacketDescription.brand("S3F", "Paper");
-        Checks.check("a brand is a payload on the brand channel", brand.isPayloadOn(PacketFields.BRAND_CHANNEL));
-        Checks.checkEquals("with the brand in it", "Paper", brand.getString(PacketFields.BRAND));
+        PacketDescription brand = PacketDescription.of("S3F", Packets.PAYLOAD).withBrand("Paper");
+        Checks.checkEquals("a brand is a role, on whatever packet carries it", "Paper", brand.getString(PacketFields.BRAND));
+        Checks.check("with no channel name of any game stamped on it", brand.getFields().size() == 1);
 
-        PacketDescription channels = PacketDescription.channels("S3F", Arrays.asList("a:one", "", "b:two"));
+        PacketDescription channels = PacketDescription.of("S3F", Packets.PAYLOAD)
+                .withChannels(Arrays.asList("a:one", "", "b:two"));
         Checks.checkEquals("channels are joined, empties dropped", "a:one,b:two",
                 channels.getString(PacketFields.CHANNELS));
         Checks.checkEquals("latency is read back as a long", Long.valueOf(48L),
-                PacketDescription.of("S38", PacketKind.OTHER).withLatency(48).getLong(PacketFields.LATENCY));
-        Checks.checkEquals("a missing field reads null", null, time.getLong(PacketFields.ID));
+                PacketDescription.of("S38").withLatency(48).getLong(PacketFields.LATENCY));
+        Checks.check("a correction is a role too", PacketDescription.of("S08").asCorrection().isCorrection()
+                && !time.isCorrection());
+        Checks.check("a description without a kind is OTHER", PacketDescription.of("X").getKind() == PacketKind.OTHER);
+        Checks.checkEquals("a missing field reads null", null, time.getLong(PacketFields.TRANSACTION));
         Checks.checkEquals("a field of the wrong type reads null", null, time.getString(PacketFields.WORLD_AGE));
+
+        PacketKind sameName = new PacketKind() {
+            @Override
+            public String getName() {
+                return "TIME";
+            }
+        };
+        Checks.check("kinds compare by name", Packets.TIME.is(sameName) && !Packets.TIME.is(Packets.TAB));
     }
 
     private static void classDescriber() {
         ClassPacketDescriber describer = PacketDescriber.byClass()
-                .on(TimeUpdate.class, p -> PacketDescription.timeUpdate("TimeUpdate", p.age))
-                .on(Marker.class, "Marker", PacketKind.ACTION)
-                .on(Base.class, p -> PacketDescription.of("Base", PacketKind.MOVEMENT))
+                .on(TimeUpdate.class, p -> PacketDescription.of("TimeUpdate", Packets.TIME).withWorldAge(p.age))
+                .on(Marker.class, "Marker", Packets.MARKER)
+                .on(Base.class, p -> PacketDescription.of("Base", Packets.BASE))
                 .on(Chunk.class, p -> null)
                 .build();
 
@@ -150,25 +174,34 @@ public final class NetworkTests {
     private static void tpsTracker() {
         TpsTracker steady = new TpsTracker();
         Checks.check("no estimate before two updates", !steady.hasEstimate());
-        Checks.checkEquals("and a healthy server is assumed", 20f, (float) steady.getTps(0L));
+        Checks.check("and no rate assumed: NaN, not any game's number", Double.isNaN(steady.getTps(0L)));
         feed(steady, 0L, 1000L, 20L, 12);
-        Checks.checkEquals("an update a second is 20 TPS", 20f, (float) steady.getTps(ms(11_000L)));
+        Checks.checkEquals("twenty ticks a second is 20 TPS, measured not assumed", 20f, (float) steady.getTps(ms(11_000L)));
+
+        TpsTracker other = new TpsTracker();
+        feed(other, 0L, 500L, 30L, 12);
+        Checks.checkEquals("a game whose server ticks at 60 reads 60 with nothing configured", 60f,
+                (float) other.getTps(ms(5500L)));
 
         TpsTracker slow = new TpsTracker();
         feed(slow, 0L, 2000L, 20L, 12);
-        Checks.checkEquals("an update every two seconds is 10 TPS", 10f, (float) slow.getTps(ms(22_000L)));
+        Checks.checkEquals("the same clock every two seconds is 10 TPS", 10f, (float) slow.getTps(ms(22_000L)));
 
         TpsTracker bunched = new TpsTracker();
         bunched.update(0L, 0L);
         bunched.update(ms(1900L), 20L);
         bunched.update(ms(2000L), 40L);
-        Checks.checkEquals("updates the network bunched still add up to 20", 20f, (float) bunched.getTps(ms(2000L)));
-        Checks.checkEquals("though the last one alone looks fast, it is capped", 20f, (float) bunched.getLastSample());
+        Checks.checkEquals("updates the network bunched still add up", 20f, (float) bunched.getTps(ms(2000L)));
+        Checks.checkEquals("though the last one alone looks fast", 200f, (float) bunched.getLastSample());
+        Checks.check("and is kept, not mistaken for a new world", bunched.hasEstimate());
+        bunched.setTargetTps(20d);
+        Checks.checkEquals("a target you set caps it", 20f, (float) bunched.getTps(ms(2000L)));
 
         TpsTracker stalled = new TpsTracker();
         feed(stalled, 0L, 1000L, 20L, 10);
         Checks.checkEquals("an overdue update pulls the estimate down before it arrives", 20f / 3f,
                 (float) stalled.getTps(ms(9000L + 3000L)), 0.01f);
+        Checks.checkEquals("overdue by the server's own measured pace", 20f, (float) stalled.getTps(ms(9000L + 900L)));
         Checks.checkEquals("time since the last update is reported", 3000L, stalled.getMillisSinceUpdate(ms(12_000L)));
 
         TpsTracker world = new TpsTracker();
@@ -181,17 +214,18 @@ public final class NetworkTests {
         Checks.check("an age that goes backwards also re-baselines", !world.hasEstimate());
 
         TpsTracker unknown = new TpsTracker();
-        feed(unknown, 0L, 1250L, -1L, 5);
-        Checks.checkEquals("with no world age, twenty ticks an update is assumed", 16f, (float) unknown.getTps(ms(5000L)));
+        feed(unknown, 0L, 1000L, -1L, 5);
+        Checks.check("an update with no world age is ignored, not guessed at", !unknown.hasEstimate());
 
-        TpsTracker fast = new TpsTracker();
-        fast.setTargetTps(40d);
-        feed(fast, 0L, 1000L, 40L, 5);
-        Checks.checkEquals("a server set to 40 TPS can report 40", 40f, (float) fast.getTps(ms(4000L)));
-        Checks.checkThrows("a target of zero is refused", IllegalArgumentException.class, () -> fast.setTargetTps(0d));
+        TpsTracker targeted = new TpsTracker();
+        targeted.setTargetTps(40d);
+        Checks.checkEquals("with a target, that is the answer before a measurement", 40f, (float) targeted.getTps(0L));
+        feed(targeted, 0L, 1000L, 40L, 5);
+        Checks.checkEquals("and a server meeting it reports it", 40f, (float) targeted.getTps(ms(4000L)));
+        targeted.clearTargetTps();
+        Checks.check("a target can be withdrawn", !targeted.hasTargetTps());
+        Checks.checkThrows("a target of zero is refused", IllegalArgumentException.class, () -> targeted.setTargetTps(0d));
     }
-
-    // ----------------------------------------------------------------- hub
 
     private static void hub() {
         Rig rig = new Rig();
@@ -224,6 +258,21 @@ public final class NetworkTests {
         rig.bus.post(PacketEvent.received(new Marked()));
         Checks.checkEquals("a cancelled send was never sent; a cancelled receive still arrived",
                 Arrays.asList("out:Chunk", "in:Marker"), heard);
+
+        Rig mixed = new Rig();
+        AtomicInteger mixedArrivals = new AtomicInteger();
+        mixed.network.addListener(new PacketListener() {
+            @Override
+            public void onInbound(PacketDescription packet, long nanos) {
+                mixedArrivals.incrementAndGet();
+            }
+        });
+        Object both = new Chunk();
+        mixed.bus.post(PacketEvent.received(both));
+        mixed.bus.post(PacketEvent.applied(both));
+        mixed.bus.post(PacketEvent.applied(new Chunk()));
+        Checks.checkEquals("one adapter may post both phases for some packets and APPLIED alone for others",
+                2, mixedArrivals.get());
 
         Rig appliedOnly = new Rig();
         AtomicInteger arrivals = new AtomicInteger();
@@ -275,12 +324,14 @@ public final class NetworkTests {
 
     private static void tpsService() {
         Rig rig = new Rig();
+        Checks.check("with nothing measured and no target, TPS is NaN", Double.isNaN(rig.tps.getTps())
+                && Double.isNaN(rig.tps.getTickMillis()));
         rig.join("play.example.net");
         for (int i = 0; i <= 10; i++) {
             rig.at(i * 2000L);
             rig.receive(new TimeUpdate(i * 20L));
         }
-        Checks.check("time packets described as time updates reach the estimate", rig.tps.hasEstimate());
+        Checks.check("packets given the world-age role reach the estimate", rig.tps.hasEstimate());
         Checks.checkEquals("at the rate they arrived", 10f, (float) rig.tps.getTps());
         Checks.checkEquals("a tick is then 100ms", 100f, (float) rig.tps.getTickMillis());
 
@@ -366,9 +417,9 @@ public final class NetworkTests {
     private static void serverInfo() {
         ServerInfo plain = ServerInfo.connected("MC.Hypixel.NET.");
         Checks.checkEquals("hosts are lower-cased, trailing dot dropped", "mc.hypixel.net", plain.getHost());
-        Checks.checkEquals("with the default port", 25565, plain.getPort());
+        Checks.check("with no port given, none is assumed", !plain.hasPort() && plain.getPort() == ServerInfo.NO_PORT);
         Checks.checkEquals("an explicit port is read", 25577, ServerInfo.connected("play.example.net:25577").getPort());
-        Checks.checkEquals("a bad port falls back", 25565, ServerInfo.connected("play.example.net:banana").getPort());
+        Checks.check("a bad port is no port", !ServerInfo.connected("play.example.net:banana").hasPort());
         ServerInfo v6 = ServerInfo.connected("[2001:db8::1]:25570");
         Checks.check("bracketed IPv6 has its port", "2001:db8::1".equals(v6.getHost()) && v6.getPort() == 25570);
         Checks.checkEquals("bare IPv6 is all host", "2001:db8::1", ServerInfo.connected("2001:db8::1").getHost());
@@ -383,29 +434,30 @@ public final class NetworkTests {
     }
 
     private static void brands() {
-        brand("Paper", ServerSoftware.PAPER, null);
-        brand("vanilla", ServerSoftware.VANILLA, null);
-        brand("Purpur", ServerSoftware.PURPUR, null);
-        brand("fml,forge", ServerSoftware.FORGE, null);
-        brand("neoforge", ServerSoftware.NEOFORGE, null);
-        brand("fabric", ServerSoftware.FABRIC, null);
-        brand("BungeeCord (git:BungeeCord-Bootstrap:1.20-R0.1-SNAPSHOT:abc:1) <- Paper", ServerSoftware.PAPER,
-                ServerSoftware.BUNGEECORD);
-        brand("Waterfall (git:Waterfall-Bootstrap:1.20:abc:500) <- Spigot", ServerSoftware.SPIGOT,
-                ServerSoftware.WATERFALL);
-        brand("Paper (Velocity)", ServerSoftware.PAPER, ServerSoftware.VELOCITY);
-        brand("Velocity", ServerSoftware.UNKNOWN, ServerSoftware.VELOCITY);
-        brand("MyNetwork <- Spigot", ServerSoftware.SPIGOT, ServerSoftware.BUNGEECORD);
+        Checks.check("Core recognises no software by itself",
+                ServerBrand.of("Paper").getSoftware() == ServerSoftware.UNKNOWN && ServerBrand.of("Paper").getProxy() == null);
+        brand("Paper", PAPER, null);
+        brand("Purpur", PURPUR, null);
+        brand("fml,forge", FORGE, null);
+        brand("BungeeCord (git:BungeeCord-Bootstrap:1.20-R0.1-SNAPSHOT:abc:1) <- Paper", PAPER, BUNGEE);
+        brand("Waterfall (git:Waterfall-Bootstrap:1.20:abc:500) <- Spigot", SPIGOT, BUNGEE);
+        brand("Paper (Velocity)", PAPER, VELOCITY);
+        brand("Velocity", ServerSoftware.UNKNOWN, VELOCITY);
         brand("Newspaper 2.0", ServerSoftware.UNKNOWN, null);
         brand("Custom (beta)", ServerSoftware.UNKNOWN, null);
+        brand("Purpur, a Paper fork", PURPUR, null);
+        Checks.check("a brand naming two goes to the one registered first",
+                ServerBrand.parse("Purpur, a Paper fork", Arrays.asList(PAPER, PURPUR)).getSoftware() == PAPER);
         Checks.checkEquals("the raw brand is kept as sent", "Paper (Velocity)",
-                ServerBrand.parse("Paper (Velocity)").getRaw());
+                ServerBrand.parse("Paper (Velocity)", SOFTWARE).getRaw());
+        Checks.check("software is equal by name", ServerSoftware.of("Paper", "paper").equals(PAPER)
+                && !ServerSoftware.proxy("Paper").equals(PAPER));
     }
 
     private static void brand(String raw, ServerSoftware software, ServerSoftware proxy) {
-        ServerBrand parsed = ServerBrand.parse(raw);
+        ServerBrand parsed = ServerBrand.parse(raw, SOFTWARE);
         Checks.check("\"" + raw + "\" is " + software + (proxy != null ? " behind " + proxy : ""),
-                parsed.getSoftware() == software && parsed.getProxy() == proxy);
+                parsed.getSoftware().equals(software) && java.util.Objects.equals(parsed.getProxy(), proxy));
     }
 
     private static void serverService() {
@@ -413,13 +465,12 @@ public final class NetworkTests {
         List<ServerChangeEvent> changes = new ArrayList<>();
         rig.bus.on(ServerChangeEvent.class, changes::add);
 
-        // 1.20.2+: the brand arrives in the configuration phase, before the world.
+        // A game that sends the brand while still connecting, before the world.
         rig.receive(new Brand("Paper (Velocity)"));
         rig.receive(new Register("bungeecord:main", "floodgate:skin"));
         Checks.check("before joining, nothing is connected", !rig.server.isConnected());
         rig.join("Play.Example.net:25565");
-        Checks.checkEquals("the brand that arrived first is applied on join", ServerSoftware.PAPER,
-                rig.server.getSoftware());
+        Checks.checkEquals("the brand that arrived first is applied on join", PAPER, rig.server.getSoftware());
         Checks.check("and so are the channels", rig.server.hasChannel("FLOODGATE:skin"));
         Checks.checkEquals("nothing is announced until the tick", 0, changes.size());
         rig.tick();
@@ -440,8 +491,7 @@ public final class NetworkTests {
         Checks.checkEquals("a new brand is announced once", 2, changes.size());
         Checks.check("as a brand change, not a join",
                 changes.get(1).isBrandChanged() && !changes.get(1).isJoin());
-        Checks.checkEquals("previous is what was last announced", ServerSoftware.PAPER,
-                changes.get(1).getPrevious().getSoftware());
+        Checks.checkEquals("previous is what was last announced", PAPER, changes.get(1).getPrevious().getSoftware());
 
         rig.leave();
         Checks.check("leaving forgets the server at once", !rig.server.isConnected() && rig.server.getBrand() == null);
@@ -452,6 +502,15 @@ public final class NetworkTests {
         rig.tick();
         Checks.check("singleplayer is a join too", rig.server.isSingleplayer() && changes.get(3).isJoin());
         Checks.check("with no brand from the last server", rig.server.getBrand() == null);
+
+        Rig late = new Rig(false);
+        late.join("play.example.net");
+        late.server.reportBrand("Paper (Velocity)");
+        Checks.check("with no software registered the brand is kept raw",
+                late.server.getSoftware() == ServerSoftware.UNKNOWN && "Paper (Velocity)".equals(late.server.getBrand().getRaw()));
+        late.server.registerSoftware(PAPER, VELOCITY);
+        Checks.check("and registering software later reads it again",
+                late.server.getSoftware() == PAPER && late.server.getBrand().getProxy() == VELOCITY);
     }
 
     // ----------------------------------------------------------- anticheat
@@ -496,13 +555,26 @@ public final class NetworkTests {
     }
 
     private static void anticheat() {
+        Rig bare = new Rig();
+        bare.join("mc.hypixel.net");
+        bare.tick();
+        for (int i = 0; i < 40; i++) {
+            bare.at(1000L + i * 50L);
+            bare.receive(new Transaction(-(i + 1)));
+        }
+        bare.anticheat.evaluate();
+        Checks.check("Core registers no signatures: nothing is detected anywhere until you say what to look for",
+                bare.anticheat.getSignatures().isEmpty() && bare.anticheat.getDetections().isEmpty());
+
         Rig rig = new Rig();
+        rig.anticheat.register(AntiCheatSignature.onServer("hypixel.net", "Watchdog"));
+        rig.anticheat.register(AntiCheatSignatures.transactionBased(2d, 10d));
         List<AntiCheatChangeEvent> changes = new ArrayList<>();
         rig.bus.on(AntiCheatChangeEvent.class, changes::add);
 
         rig.join("mc.hypixel.net");
         rig.tick();
-        Checks.checkEquals("a known server is recognised on join", "Watchdog",
+        Checks.checkEquals("a server you named is recognised on join", "Watchdog",
                 rig.anticheat.getPrimary().map(Detection::getName).orElse("none"));
         Checks.checkEquals("as known", Confidence.KNOWN, rig.anticheat.getPrimary().get().getConfidence());
         Checks.check("and announced", changes.size() == 1 && changes.get(0).getPrimary().isPresent());
@@ -521,11 +593,12 @@ public final class NetworkTests {
         }
         rig.anticheat.evaluate();
         Detection generic = rig.anticheat.getPrimary().orElse(null);
-        Checks.check("a transaction every tick is a transaction-based anticheat",
+        Checks.check("transactions above your rate are a transaction-based anticheat",
                 generic != null && generic.is(AntiCheatSignatures.TRANSACTION_BASED));
-        Checks.checkEquals("likely, not known", Confidence.LIKELY, generic.getConfidence());
+        Checks.checkEquals("likely, at the rate you called likely", Confidence.LIKELY, generic.getConfidence());
         Checks.check("with the evidence in the reason", generic.getReason().contains("decrementing negative"));
-        Checks.checkEquals("keep-alives are not counted as transactions", 40L, rig.anticheat.getTransactions().getCount());
+        Checks.checkEquals("packets without the transaction role are not counted", 40L,
+                rig.anticheat.getTransactions().getCount());
 
         rig.anticheat.register(evidence -> evidence.getTransactions().getOrder() == TransactionPattern.Order.DECREMENTING
                 ? Detection.of("CountdownAC", Confidence.LIKELY, "counts down")
@@ -551,6 +624,7 @@ public final class NetworkTests {
         Checks.check("and can be removed", rig.anticheat.unregister(broken));
 
         Rig slow = new Rig();
+        slow.anticheat.register(AntiCheatSignatures.transactionBased(2d, 10d));
         slow.join("play.example.net");
         slow.tick();
         for (int i = 0; i < 12; i++) {
@@ -558,7 +632,14 @@ public final class NetworkTests {
             slow.receive(new Transaction(i + 1));
         }
         slow.anticheat.evaluate();
-        Checks.check("a transaction a second is nothing", slow.anticheat.getDetections().isEmpty());
+        Checks.check("a transaction a second is below the rate you set", slow.anticheat.getDetections().isEmpty());
+        slow.anticheat.clearSignatures();
+        slow.anticheat.register(AntiCheatSignatures.transactionBased(0.5d, 0.9d));
+        slow.anticheat.evaluate();
+        Checks.check("and above a lower one: the numbers are yours",
+                slow.anticheat.getPrimary().map(d -> d.getConfidence() == Confidence.LIKELY).orElse(false));
+        Checks.checkThrows("a likely rate below the possible one is refused", IllegalArgumentException.class,
+                () -> AntiCheatSignatures.transactionBased(10d, 2d));
 
         slow.anticheat.clearSignatures();
         slow.anticheat.register(AntiCheatSignature.brandContains("grim", "Grim", Confidence.KNOWN));
@@ -569,10 +650,20 @@ public final class NetworkTests {
         Checks.check("brand and channel signatures match",
                 slow.anticheat.isDetected("Grim") && slow.anticheat.isDetected("Vulcan"));
         Checks.checkEquals("ranked by confidence", "Grim", slow.anticheat.getPrimary().get().getName());
-        Checks.check("clearing signatures removes the defaults", slow.anticheat.getSignatures().size() == 2);
-    }
 
-    // -------------------------------------------------------------- client
+        slow.anticheat.setEvaluateEveryTicks(5);
+        slow.anticheat.clearSignatures();
+        for (int i = 0; i < 4; i++) {
+            slow.tick();
+        }
+        Checks.check("re-evaluation waits for the interval you set", slow.anticheat.isDetected("Grim"));
+        slow.tick();
+        Checks.check("and runs on it", slow.anticheat.getDetections().isEmpty());
+        Checks.checkThrows("an interval of zero is refused", IllegalArgumentException.class,
+                () -> slow.anticheat.setEvaluateEveryTicks(0));
+        Checks.check("the anticheat service declares the server service it reads",
+                Arrays.asList(slow.anticheat.dependsOn()).contains(ServerService.class));
+    }
 
     private static void bootedClient(TestClient client) {
         Checks.check("the booted client has every network service", Core.network() != null && Core.server() != null
@@ -580,7 +671,7 @@ public final class NetworkTests {
         Checks.check("with no describer until the adapter installs one", !Core.network().hasDescriber());
 
         Core.network().setDescriber(PacketDescriber.byClass()
-                .on(Chunk.class, "S21PacketChunkData", PacketKind.WORLD_STATE)
+                .on(Chunk.class, "S21PacketChunkData", Packets.CHUNK)
                 .build());
         Core.timeline().begin("network");
         Core.bus().post(PacketEvent.received(new Chunk()));
@@ -604,13 +695,15 @@ public final class NetworkTests {
 
     /** The adapter's describer, for the fake packets below. */
     private static final PacketDescriber DESCRIBER = PacketDescriber.byClass()
-            .on(TimeUpdate.class, p -> PacketDescription.timeUpdate("TimeUpdate", p.age))
-            .on(Transaction.class, p -> PacketDescription.transaction("Transaction", p.id))
-            .on(KeepAlive.class, p -> PacketDescription.keepAlive("KeepAlive", p.id))
-            .on(Brand.class, p -> PacketDescription.brand("CustomPayload", p.brand))
-            .on(Register.class, p -> PacketDescription.channels("CustomPayload", Arrays.asList(p.channels)))
-            .on(PlayerList.class, p -> PacketDescription.of("PlayerList", PacketKind.OTHER).withLatency(p.latency))
-            .on(Marker.class, "Marker", PacketKind.ACTION)
+            .on(TimeUpdate.class, p -> PacketDescription.of("TimeUpdate", Packets.TIME).withWorldAge(p.age))
+            .on(Transaction.class, p -> PacketDescription.of("Transaction", Packets.TRANSACTION).withTransaction(p.id))
+            .on(KeepAlive.class, p -> PacketDescription.of("KeepAlive", Packets.KEEP_ALIVE)
+                    .withCorrelationKey("keepalive:" + p.id))
+            .on(Brand.class, p -> PacketDescription.of("CustomPayload", Packets.PAYLOAD).withBrand(p.brand))
+            .on(Register.class, p -> PacketDescription.of("CustomPayload", Packets.PAYLOAD)
+                    .withChannels(Arrays.asList(p.channels)))
+            .on(PlayerList.class, p -> PacketDescription.of("PlayerList", Packets.TAB).withLatency(p.latency))
+            .on(Marker.class, "Marker", Packets.MARKER)
             .build();
 
     /** A bare bus, a hand-driven clock, and every network service on it. */
@@ -627,12 +720,20 @@ public final class NetworkTests {
         final AntiCheatService anticheat = new AntiCheatService(logger, bus, network, server);
 
         Rig() {
+            this(true);
+        }
+
+        /** @param software whether to register the test client's server software */
+        Rig(boolean software) {
             network.start();
             server.start();
             tps.start();
             lag.start();
             anticheat.start();
             network.setDescriber(DESCRIBER);
+            if (software) {
+                server.registerSoftware(SOFTWARE.toArray(new ServerSoftware[0]));
+            }
         }
 
         void at(long millis) {

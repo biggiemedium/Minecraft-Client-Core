@@ -1,86 +1,53 @@
 package dev.px.core.network.packet;
 
 /**
- * What a packet means, as the adapter's {@link PacketDescriber} classifies it.
+ * What a packet is, in your client's own words.
  *
- * <p>Core cannot tell a teleport from a chat message; the describer can, and this
- * is the vocabulary it answers in. The version-specific knowledge lives in one
- * adapter class, and everything downstream &mdash; the timeline's corrections
- * and queries, TPS, lag, server and anticheat detection &mdash; works off these
- * constants.
+ * <p>Core has no list of packets and never will: a game that adds a packet,
+ * removes one, or splits one in two must not need a change here. You declare
+ * the kinds you care about, usually as an enum, the same way module categories
+ * work, and your {@link PacketDescriber} files each packet under one:
  *
- * <p>Only classify what you care about. A describer that knows three packets
- * returns {@link #OTHER} for the rest, and every service reading this skips what
- * it does not recognise.
+ * <pre>{@code
+ * public enum Packets implements PacketKind {
+ *     MOVEMENT, TELEPORT, VELOCITY, TRANSACTION, KEEP_ALIVE, TIME, PAYLOAD
+ * }
+ * }</pre>
+ *
+ * <p>A kind is a label for you: for filtering a {@link dev.px.core.network.PacketListener},
+ * querying a timeline, reading a recording. <b>None of Core's services read
+ * it.</b> What they read are roles the describer gives a description, whatever
+ * its kind &mdash; {@link PacketDescription#withWorldAge} for TPS,
+ * {@link PacketDescription#withTransaction} for anticheat detection,
+ * {@link PacketDescription#asCorrection} for the timeline, and so on. So a
+ * version with no teleport packet, or three of them, is described in full
+ * without Core knowing.
+ *
+ * <p>Kinds are compared by {@linkplain #getName() name}, which is also what a
+ * timeline recording stores, so two kinds with the same name are the same kind.
  */
-public enum PacketKind {
+public interface PacketKind {
 
-    /** The client reporting its own position, rotation or ground state. */
-    MOVEMENT,
+    /** What a packet is filed under when the describer gave it no kind. */
+    PacketKind OTHER = Other.INSTANCE;
 
-    /** The client reporting an action: sprint or sneak toggles, swings, use, attack. */
-    ACTION,
+    /** @return the name recordings store and comparisons use; an enum's constant name by default */
+    default String getName() {
+        return toString();
+    }
 
-    /** The server setting the player's position outright. */
-    TELEPORT,
+    /** @return whether this kind has the same name as {@code other} */
+    default boolean is(PacketKind other) {
+        return other != null && getName().equals(other.getName());
+    }
+}
 
-    /** The server setting the player's velocity. */
-    VELOCITY,
+/** The one kind Core defines, so a packet nobody described still has one. */
+enum Other implements PacketKind {
+    INSTANCE;
 
-    /** An explosion, which pushes the player. */
-    EXPLOSION,
-
-    /** Abilities: flying, fly speed, walk speed. */
-    ABILITIES,
-
-    /** A potion effect added or removed. */
-    EFFECT,
-
-    /** An entity attribute, such as movement speed, changed. */
-    ATTRIBUTE,
-
-    /** A block or chunk change that may alter what the player collides with. */
-    WORLD_STATE,
-
-    /** Respawn or dimension change. */
-    RESPAWN,
-
-    /**
-     * Transactions, pings and teleport confirms: packets that exist to be
-     * answered, and so the ones that tie an outbound action to its reply.
-     *
-     * <p>Inbound, this is also what an anticheat uses to measure the client's
-     * latency: a transaction (1.8&ndash;1.16) or ping (1.17+) every tick, which a
-     * vanilla server never sends. Give each one its number with
-     * {@link PacketDescription#transaction} so the pattern can be read.
-     */
-    TRANSACTION,
-
-    /**
-     * Keep-alives. Separate from {@link #TRANSACTION} because vanilla sends them
-     * on its own schedule, so counting them as transactions would make every
-     * server look like it runs an anticheat.
-     */
-    KEEP_ALIVE,
-
-    /**
-     * The server's world clock: {@code S03PacketTimeUpdate} on 1.8.9,
-     * {@code WorldTimeUpdateS2CPacket} on modern versions. Vanilla sends one every
-     * twenty ticks, which is what TPS is estimated from.
-     */
-    TIME_UPDATE,
-
-    /**
-     * A plugin message on a named channel: the server brand, channel
-     * registrations, and whatever the server's plugins say to their client mods.
-     */
-    PAYLOAD,
-
-    /** Anything else. */
-    OTHER;
-
-    /** @return whether an applied packet of this kind overrules the client's motion. */
-    public boolean isCorrection() {
-        return this == TELEPORT || this == VELOCITY || this == EXPLOSION;
+    @Override
+    public String getName() {
+        return "OTHER";
     }
 }

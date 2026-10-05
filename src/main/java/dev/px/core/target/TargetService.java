@@ -1,10 +1,10 @@
 package dev.px.core.target;
 
 import dev.px.core.entity.EntityService;
-import dev.px.core.entity.TrackedEntity;
+import dev.px.core.entity.EntityTracker;
+import dev.px.core.entity.Tracked;
 import dev.px.core.math.Vec3;
 import dev.px.core.service.Service;
-import dev.px.core.social.SocialService;
 import dev.px.core.util.Validate;
 
 import java.util.ArrayDeque;
@@ -17,19 +17,19 @@ import java.util.List;
 import java.util.function.Consumer;
 
 /**
- * Runs {@link TargetSelector}s against the world {@code Core.entities()} holds.
+ * Runs {@link TargetSelector}s against the trackers {@code Core.entities()} feeds.
  *
  * <pre>{@code
- * TrackedEntity target = Core.targets().best(enemies);             // from the player's eyes
- * List<TrackedEntity> near = Core.targets().all(crystals, 3);      // three best, in order
- * TrackedEntity pop = Core.targets().best(crystals, enemy.getPosition());   // from another point
+ * Tracked<EntityPlayer> target = Core.targets().best(enemies);              // from the player's eyes
+ * List<Tracked<EntityEnderCrystal>> near = Core.targets().all(crystals, 3); // three best, in order
+ * Tracked<EntityEnderCrystal> pop = Core.targets().best(crystals, enemy.getPosition());
  * int threats = Core.targets().count(enemies);
  * }</pre>
  *
  * <h2>Cost</h2>
  *
- * <p>With c candidates the range query visits (see {@code EntityService}) and m
- * of them passing every filter:
+ * <p>With c candidates the tracker's range query visits and m of them passing
+ * every filter:
  *
  * <pre>
  * best, count, any, forEach    O(c)             one pass, no sort, no allocation
@@ -37,11 +37,12 @@ import java.util.function.Consumer;
  * accepts                      O(1)
  * </pre>
  *
- * <p>Every query reads the snapshot from the start of the tick, so ten modules
- * asking in one tick see the same world and pay only for their own filters.
+ * <p>Every query reads the world as of the start of the tick, so ten modules
+ * asking in one tick see the same one and pay only for their own filters.
  *
- * <p>Queries nest: a predicate or sort may run another query, and each gets its
- * own working state. Game thread only.
+ * <p>A selector whose tracker is named by class and not registered finds
+ * nothing. Queries nest: a predicate or sort may run another query, and each gets
+ * its own working state. Game thread only.
  */
 public final class TargetService implements Service {
 
@@ -51,13 +52,10 @@ public final class TargetService implements Service {
     };
 
     private final EntityService entities;
-    private final SocialService social;
     private final Deque<Query> idle = new ArrayDeque<>();
 
-    /** @param social consulted for friends; null to treat nobody as a friend */
-    public TargetService(EntityService entities, SocialService social) {
+    public TargetService(EntityService entities) {
         this.entities = Validate.notNull(entities, "entities");
-        this.social = social;
     }
 
     @Override
@@ -72,49 +70,49 @@ public final class TargetService implements Service {
     // ------------------------------------------------------------- queries
 
     /** @return the best target as seen from the local player's eyes, or null if none qualifies */
-    public TrackedEntity best(TargetSelector selector) {
+    public <E> Tracked<E> best(TargetSelector<E> selector) {
         Query query = open(selector, null);
-        return query == null ? null : query.best();
+        return query == null ? null : query.<E>best();
     }
 
     /** @return the best target as seen from {@code origin}; the view is still the local player's */
-    public TrackedEntity best(TargetSelector selector, Vec3 origin) {
+    public <E> Tracked<E> best(TargetSelector<E> selector, Vec3 origin) {
         Query query = open(selector, Validate.notNull(origin, "origin"));
-        return query == null ? null : query.best();
+        return query == null ? null : query.<E>best();
     }
 
     /** @return every target, best first */
-    public List<TrackedEntity> all(TargetSelector selector) {
+    public <E> List<Tracked<E>> all(TargetSelector<E> selector) {
         return all(selector, Integer.MAX_VALUE);
     }
 
     /** @return up to {@code limit} targets, best first */
-    public List<TrackedEntity> all(TargetSelector selector, int limit) {
+    public <E> List<Tracked<E>> all(TargetSelector<E> selector, int limit) {
         Query query = open(selector, null);
-        return query == null ? Collections.<TrackedEntity>emptyList() : query.all(limit);
+        return query == null ? Collections.<Tracked<E>>emptyList() : query.<E>all(limit);
     }
 
-    public List<TrackedEntity> all(TargetSelector selector, Vec3 origin, int limit) {
+    public <E> List<Tracked<E>> all(TargetSelector<E> selector, Vec3 origin, int limit) {
         Query query = open(selector, Validate.notNull(origin, "origin"));
-        return query == null ? Collections.<TrackedEntity>emptyList() : query.all(limit);
+        return query == null ? Collections.<Tracked<E>>emptyList() : query.<E>all(limit);
     }
 
-    public int count(TargetSelector selector) {
+    public int count(TargetSelector<?> selector) {
         Query query = open(selector, null);
         return query == null ? 0 : query.count();
     }
 
-    public int count(TargetSelector selector, Vec3 origin) {
+    public int count(TargetSelector<?> selector, Vec3 origin) {
         Query query = open(selector, Validate.notNull(origin, "origin"));
         return query == null ? 0 : query.count();
     }
 
-    public boolean any(TargetSelector selector) {
+    public boolean any(TargetSelector<?> selector) {
         return best(selector) != null;
     }
 
     /** Visits every target, unsorted. Allocates nothing. */
-    public void forEach(TargetSelector selector, Consumer<? super TrackedEntity> action) {
+    public <E> void forEach(TargetSelector<E> selector, Consumer<? super Tracked<E>> action) {
         Validate.notNull(action, "action");
         Query query = open(selector, null);
         if (query != null) {
@@ -124,10 +122,11 @@ public final class TargetService implements Service {
 
     /**
      * @return whether one entity passes the selector right now, from the local
-     *         player's eyes. O(1): how a {@link TargetLock} checks that the target
+     *         player's eyes: still held by the selector's tracker, and through
+     *         every filter. O(1): how a {@link TargetLock} checks that the target
      *         it holds is still valid without searching again
      */
-    public boolean accepts(TargetSelector selector, TrackedEntity entity) {
+    public <E> boolean accepts(TargetSelector<E> selector, Tracked<E> entity) {
         if (entity == null || !entity.isTracked()) {
             return false;
         }
@@ -136,16 +135,23 @@ public final class TargetService implements Service {
     }
 
     /** @return a lock that keeps a target across ticks until it stops qualifying */
-    public TargetLock lock(TargetSelector selector) {
-        return new TargetLock(this, selector);
+    public <E> TargetLock<E> lock(TargetSelector<E> selector) {
+        return new TargetLock<>(this, selector);
     }
 
     // ------------------------------------------------------------ internals
 
-    /** @return a query ready to run, or null when there is no local player and no origin to look from */
-    private Query open(TargetSelector selector, Vec3 origin) {
+    /**
+     * @return a query ready to run, or null when the selector's tracker is not
+     *         registered, or there is no local player and no origin to look from
+     */
+    private Query open(TargetSelector<?> selector, Vec3 origin) {
         Validate.notNull(selector, "selector");
-        TrackedEntity self = entities.getSelf();
+        EntityTracker<?> tracker = selector.resolve(entities);
+        if (tracker == null) {
+            return null;
+        }
+        Tracked<?> self = entities.getSelf();
         double x;
         double y;
         double z;
@@ -161,7 +167,7 @@ public final class TargetService implements Service {
             return null;
         }
         Query query = idle.isEmpty() ? new Query() : idle.pop();
-        query.begin(selector, self, x, y, z);
+        query.begin(selector, tracker, self, x, y, z);
         return query;
     }
 
@@ -170,34 +176,44 @@ public final class TargetService implements Service {
         idle.push(query);
     }
 
-    /** One run of one selector: its filters' inputs, read once, and whatever it is collecting. */
-    private final class Query implements Consumer<TrackedEntity> {
+    /**
+     * One run of one selector: its filters' inputs, read once, and whatever it is
+     * collecting.
+     *
+     * <p>Raw over the entity type, because one pooled query serves selectors of
+     * every type; the public methods above are what keep the types honest.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private final class Query implements Consumer<Tracked> {
 
         private final TargetContext context = new TargetContext();
         private TargetSelector selector;
+        private EntityTracker tracker;
         private double range;
         private double squaredRange;
         private double fovCosine;
 
         private Mode mode;
-        private TrackedEntity best;
+        private Tracked best;
         private double bestScore;
         private double bestDistance;
         private int count;
-        private Consumer<? super TrackedEntity> action;
+        private Consumer action;
         private Candidate[] candidates = new Candidate[16];
 
-        void begin(TargetSelector selector, TrackedEntity self, double x, double y, double z) {
+        void begin(TargetSelector<?> selector, EntityTracker<?> tracker, Tracked<?> self, double x, double y, double z) {
             this.selector = selector;
+            this.tracker = tracker;
             this.range = selector.currentRange();
             this.squaredRange = Double.isInfinite(range) ? Double.POSITIVE_INFINITY : range * range;
             this.fovCosine = selector.currentFovCosine();
-            context.begin(social, self, x, y, z);
+            context.begin(self, x, y, z);
         }
 
         void end() {
             context.end();
             selector = null;
+            tracker = null;
             best = null;
             action = null;
             for (int i = 0; i < count && i < candidates.length; i++) {
@@ -208,7 +224,7 @@ public final class TargetService implements Service {
             count = 0;
         }
 
-        TrackedEntity best() {
+        <E> Tracked<E> best() {
             try {
                 mode = Mode.BEST;
                 best = null;
@@ -221,14 +237,14 @@ public final class TargetService implements Service {
             }
         }
 
-        List<TrackedEntity> all(int limit) {
+        <E> List<Tracked<E>> all(int limit) {
             try {
                 mode = Mode.COLLECT;
                 count = 0;
                 search();
                 Arrays.sort(candidates, 0, count, RANKING);
                 int size = Math.min(count, Math.max(0, limit));
-                List<TrackedEntity> result = new ArrayList<>(size);
+                List<Tracked<E>> result = new ArrayList<>(size);
                 for (int i = 0; i < size; i++) {
                     result.add(candidates[i].entity);
                 }
@@ -250,7 +266,7 @@ public final class TargetService implements Service {
             }
         }
 
-        void forEach(Consumer<? super TrackedEntity> visit) {
+        void forEach(Consumer visit) {
             try {
                 mode = Mode.VISIT;
                 action = visit;
@@ -260,21 +276,20 @@ public final class TargetService implements Service {
             }
         }
 
-        boolean check(TrackedEntity entity) {
+        boolean check(Tracked entity) {
             try {
-                return selector.accepts(entity, context, squaredRange, fovCosine);
+                return tracker.contains(entity) && selector.accepts(entity, context, squaredRange, fovCosine);
             } finally {
                 close(this);
             }
         }
 
         private void search() {
-            entities.forEachWithin(selector.getCategories(), context.getOriginX(), context.getOriginY(),
-                    context.getOriginZ(), range, this);
+            tracker.forEachWithin(context.getOriginX(), context.getOriginY(), context.getOriginZ(), range, this);
         }
 
         @Override
-        public void accept(TrackedEntity entity) {
+        public void accept(Tracked entity) {
             if (!selector.accepts(entity, context, squaredRange, fovCosine)) {
                 return;
             }
@@ -319,8 +334,9 @@ public final class TargetService implements Service {
     private enum Mode { BEST, COLLECT, COUNT, VISIT }
 
     /** A target and its ranking, pooled per query so sorting builds nothing new after warm-up. */
+    @SuppressWarnings("rawtypes")
     private static final class Candidate {
-        private TrackedEntity entity;
+        private Tracked entity;
         private double score;
         private double distance;
     }

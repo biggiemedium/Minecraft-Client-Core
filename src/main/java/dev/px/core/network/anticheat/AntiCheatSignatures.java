@@ -1,65 +1,59 @@
 package dev.px.core.network.anticheat;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+import dev.px.core.util.Validate;
+
 import java.util.Locale;
 
 /**
- * The signatures {@link AntiCheatService} starts with.
+ * Ready-made signatures that judge behaviour rather than names.
  *
- * <p>Deliberately few. A signature that names a particular anticheat from its
- * transaction numbering is only as good as the last time someone checked that
- * anticheat's source, and a stale one reports the wrong name with confidence,
- * which is worse than reporting none. So what ships here is what does not go
- * stale: the behaviour every latency-compensating anticheat shares, and servers
- * whose anticheat is public knowledge. Register the rest yourself.
+ * <p>{@link AntiCheatService} starts with none registered. A signature that names
+ * a particular anticheat, or a particular server's, is a fact about one game's
+ * ecosystem and goes stale; a stale one reports the wrong name with confidence,
+ * which is worse than reporting none. So those are yours to write, and the
+ * numbers below are yours to choose.
  */
 public final class AntiCheatSignatures {
 
-    /** The name {@link #transactionBased()} reports, since it cannot say which one it saw. */
+    /** The name {@link #transactionBased} reports, since it cannot say which one it saw. */
     public static final String TRANSACTION_BASED = "Transaction-based anticheat";
 
-    /** Fewer transactions than this are not enough to judge a rate from. */
+    /** Fewer transactions than this are not enough to judge a rate from. A statistical floor, not a game fact. */
     private static final int MIN_TRANSACTIONS = 10;
-
-    /** Faster than this is not inventory clicks. */
-    private static final double POSSIBLE_RATE = 2d;
-
-    /** About every other tick or faster: a server timing the client. */
-    private static final double LIKELY_RATE = 10d;
 
     private AntiCheatSignatures() {
     }
 
-    /** Every signature below, in the order {@link AntiCheatService} registers them. */
-    public static List<AntiCheatSignature> defaults() {
-        return Collections.unmodifiableList(Arrays.asList(
-                AntiCheatSignature.onServer("hypixel.net", "Watchdog"),
-                transactionBased()));
-    }
-
     /**
-     * A server sending transactions or pings far faster than inventory clicks
-     * would explain.
+     * A server sending packets for the client to answer far faster than the
+     * game itself would.
      *
-     * <p>Vanilla never does this. An anticheat that predicts movement does it on
-     * every tick, to know which of its own packets the client had received when it
-     * moved. This cannot say which anticheat it is &mdash; they all do it &mdash;
-     * so it reports {@link #TRANSACTION_BASED}. At equal confidence any named
-     * detection ranks above it, so a signature you register for the same evidence
-     * is the one {@link AntiCheatService#getPrimary()} reports.
+     * <p>An anticheat that predicts movement sends one on a fixed short period, to
+     * know which of its own packets the client had received when it moved. This
+     * cannot say which anticheat it is &mdash; they all do it &mdash; so it reports
+     * {@link #TRANSACTION_BASED}. At equal confidence any named detection ranks
+     * above it, so a signature you register for the same evidence is the one
+     * {@link AntiCheatService#getPrimary()} reports.
+     *
+     * <pre>{@code
+     * // e.g. on a game whose own transactions only follow inventory clicks
+     * Core.anticheat().register(AntiCheatSignatures.transactionBased(2, 10));
+     * }</pre>
+     *
+     * @param possibleRate transactions a second above which the game's own traffic
+     *        no longer explains them: {@link Confidence#POSSIBLE}
+     * @param likelyRate transactions a second above which it is a server timing the
+     *        client: {@link Confidence#LIKELY}
      */
-    public static AntiCheatSignature transactionBased() {
+    public static AntiCheatSignature transactionBased(double possibleRate, double likelyRate) {
+        Validate.check(possibleRate > 0d, "possibleRate must be positive");
+        Validate.check(likelyRate >= possibleRate, "likelyRate must not be below possibleRate");
         return evidence -> {
             TransactionPattern p = evidence.getTransactions();
-            if (p.getCount() < MIN_TRANSACTIONS || p.getRatePerSecond() < POSSIBLE_RATE) {
+            if (p.getCount() < MIN_TRANSACTIONS || p.getRatePerSecond() < possibleRate) {
                 return null;
             }
-            boolean counter = p.isSequential() && p.getSign() == TransactionPattern.Sign.NEGATIVE;
-            Confidence confidence = p.getRatePerSecond() >= LIKELY_RATE || counter
-                    ? Confidence.LIKELY
-                    : Confidence.POSSIBLE;
+            Confidence confidence = p.getRatePerSecond() >= likelyRate ? Confidence.LIKELY : Confidence.POSSIBLE;
             String numbering = p.getOrder() == TransactionPattern.Order.UNKNOWN
                     ? "unnumbered"
                     : p.getOrder().name().toLowerCase(Locale.ROOT) + " " + p.getSign().name().toLowerCase(Locale.ROOT);

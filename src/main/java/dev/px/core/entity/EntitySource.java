@@ -4,66 +4,40 @@ package dev.px.core.entity;
  * Your game's world, as {@link EntityService} reads it. One class per game
  * version, the same seam as {@code PacketDescriber}.
  *
- * <p>Three things to declare, once, in your own code: what entities <em>are</em>
- * ({@link EntityCategory}), what can be <em>true</em> of them
- * ({@link EntityTag}), and what <em>numbers</em> they have
- * ({@link EntityAttribute}). Core ships none of these, so nothing here changes
- * when a game adds an entity, a mechanic or a way to fight.
+ * <p>It answers two things: which entities exist, and where each one is. What
+ * an entity <em>is</em> &mdash; a player, a crystal, an enemy &mdash; is not the
+ * source's business; that is what an {@link EntityTracker} of the right type
+ * decides, with the game's own object in hand.
  *
  * <pre>{@code
- * // Your vocabulary: as coarse or as fine as your modules need.
- * public enum Kinds implements EntityCategory { PLAYER, MONSTER, CRYSTAL, OTHER }
- * public enum Tags implements EntityTag { INVISIBLE, TEAMMATE, DEAD }
- * public enum Stats implements EntityAttribute { HEALTH, ARMOR }
- *
  * public final class LegacyEntities implements EntitySource<Entity> {
  *
  *     private final Minecraft mc = Minecraft.getMinecraft();
  *
- *     public Iterable<Entity> entities() {
- *         return mc.theWorld == null ? null : mc.theWorld.loadedEntityList;
- *     }
+ *     public Iterable<Entity> entities() { return mc.theWorld == null ? null : mc.theWorld.loadedEntityList; }
+ *     public Entity self()               { return mc.thePlayer; }
  *
- *     public Entity self() {
- *         return mc.thePlayer;
- *     }
- *
- *     public void read(Entity e, EntityData out) {
- *         out.id(e.getEntityId())
- *            .position(e.posX, e.posY, e.posZ)
- *            .size(e.width, e.height)
- *            .eyeHeight(e.getEyeHeight())
- *            .rotation(e.rotationYaw, e.rotationPitch)
- *            .tag(Tags.INVISIBLE, e.isInvisible());
- *         if (e instanceof EntityPlayer) {
- *             out.category(Kinds.PLAYER).name(e.getName());
- *         } else if (e instanceof EntityEnderCrystal) {
- *             out.category(Kinds.CRYSTAL);
- *         } else if (e instanceof IMob) {
- *             out.category(Kinds.MONSTER);
- *         } else {
- *             out.category(Kinds.OTHER);
- *         }
- *         if (e instanceof EntityLivingBase) {
- *             EntityLivingBase living = (EntityLivingBase) e;
- *             out.set(Stats.HEALTH, living.getHealth())
- *                .set(Stats.ARMOR, living.getTotalArmorValue())
- *                .tag(Tags.DEAD, living.deathTime > 0);
- *         }
- *     }
+ *     public double x(Entity e)          { return e.posX; }
+ *     public double y(Entity e)          { return e.posY; }
+ *     public double z(Entity e)          { return e.posZ; }
+ *     public double width(Entity e)      { return e.width; }
+ *     public double height(Entity e)     { return e.height; }
+ *     public double eyeHeight(Entity e)  { return e.getEyeHeight(); }
+ *     public float yaw(Entity e)         { return e.rotationYaw; }
+ *     public float pitch(Entity e)       { return e.rotationPitch; }
  * }
  *
  * Core.entities().setSource(new LegacyEntities());       // once
  * }</pre>
  *
- * <p>That is the whole integration: Core reads the world at the start of every
- * tick, and every selector, lock and query works from that snapshot.
+ * <p>Core has no defaults taken from any game. The three a source may leave out
+ * read as zero: eyes at the position, and facing yaw 0, pitch 0.
  *
- * <p>Called on the game thread, from the tick. {@link #read} may throw for an
- * entity it cannot make sense of; that entity is skipped for the tick and the
- * first failure is logged.
+ * <p>Called on the game thread, from the tick. A method may throw for an entity
+ * it cannot make sense of; that entity is skipped for the tick and the first
+ * failure is logged.
  *
- * @param <E> the game's entity type
+ * @param <E> the game's entity type: the common supertype of everything listed
  */
 public interface EntitySource<E> {
 
@@ -73,6 +47,30 @@ public interface EntitySource<E> {
     /** @return the local player, or null when there is none */
     E self();
 
-    /** Describes one entity. Called for the local player too. */
-    void read(E entity, EntityData out);
+    /** The position: the bottom centre of the entity's box. */
+    double x(E entity);
+
+    double y(E entity);
+
+    double z(E entity);
+
+    /** How wide and deep the box is, centred on the position. */
+    double width(E entity);
+
+    /** How tall the box is, standing on the position. */
+    double height(E entity);
+
+    /** How far above the position the entity sees from. Targeting measures from the local player's. */
+    default double eyeHeight(E entity) {
+        return 0d;
+    }
+
+    /** Which way it faces, in the same yaw and pitch convention as the rest of Core. */
+    default float yaw(E entity) {
+        return 0f;
+    }
+
+    default float pitch(E entity) {
+        return 0f;
+    }
 }

@@ -23,6 +23,7 @@ public final class FakePlatform implements Platform {
     private float mouseX;
     private float mouseY;
     private boolean inGame = true;
+    private boolean throwOnInGame;
     private String clipboard = "";
 
     /** Messages Core printed, so command output can be asserted. */
@@ -40,6 +41,11 @@ public final class FakePlatform implements Platform {
     public void setMouse(float x, float y) {
         this.mouseX = x;
         this.mouseY = y;
+    }
+
+    /** Makes {@link #isInGame()} throw, for code that must survive a broken platform. */
+    public void setThrowOnInGame(boolean throwOnInGame) {
+        this.throwOnInGame = throwOnInGame;
     }
 
     public void setInGame(boolean inGame) {
@@ -61,7 +67,12 @@ public final class FakePlatform implements Platform {
     @Override public String getGameVersion() { return "Headless"; }
     @Override public File getDataDirectory() { return dataDirectory; }
     @Override public String getUsername() { return "Tester"; }
-    @Override public boolean isInGame() { return inGame; }
+    @Override public boolean isInGame() {
+        if (throwOnInGame) {
+            throw new IllegalStateException("platform bug");
+        }
+        return inGame;
+    }
     @Override public float getScreenWidth() { return screenWidth; }
     @Override public float getScreenHeight() { return screenHeight; }
     @Override public float getScreenScale() { return 2f; }

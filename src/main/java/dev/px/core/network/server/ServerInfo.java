@@ -20,20 +20,22 @@ import java.util.Set;
 @EqualsAndHashCode
 public final class ServerInfo {
 
-    public static final int DEFAULT_PORT = 25565;
+    /** What {@link #getPort()} is when the address named no port. Core assumes no game's default. */
+    public static final int NO_PORT = -1;
 
     /** Not connected to anything. */
     public static final ServerInfo DISCONNECTED =
-            new ServerInfo(false, "", "", DEFAULT_PORT, null, Collections.<String>emptySet());
+            new ServerInfo(false, "", "", NO_PORT, null, Collections.<String>emptySet());
 
     private final boolean connected;
 
-    /** The address as the adapter gave it, e.g. {@code "mc.hypixel.net:25565"}. Empty in singleplayer. */
+    /** The address as the adapter gave it, e.g. {@code "play.example.net:25577"}. Empty in singleplayer. */
     private final String address;
 
-    /** Lower-case host with no port or trailing dot, e.g. {@code "mc.hypixel.net"}. Empty in singleplayer. */
+    /** Lower-case host with no port or trailing dot, e.g. {@code "play.example.net"}. Empty in singleplayer. */
     private final String host;
 
+    /** The port the address named, or {@link #NO_PORT}. */
     private final int port;
 
     /** What the server says it runs, or null until it says. */
@@ -56,7 +58,7 @@ public final class ServerInfo {
     public static ServerInfo connected(String address) {
         String given = address == null ? "" : address.trim();
         String host = given;
-        int port = DEFAULT_PORT;
+        int port = NO_PORT;
 
         if (given.startsWith("[")) {
             int close = given.indexOf(']');
@@ -78,6 +80,11 @@ public final class ServerInfo {
             host = host.substring(0, host.length() - 1);
         }
         return new ServerInfo(true, given, host, port, null, Collections.<String>emptySet());
+    }
+
+    /** @return whether the address named a port */
+    public boolean hasPort() {
+        return port != NO_PORT;
     }
 
     public boolean isSingleplayer() {
@@ -102,7 +109,7 @@ public final class ServerInfo {
         return host.equals(wanted) || host.endsWith("." + wanted);
     }
 
-    /** @return the brand's software, or {@link ServerSoftware#UNKNOWN} before the brand arrives */
+    /** @return the brand's software, or {@link ServerSoftware#UNKNOWN} before the brand arrives or when it names nothing registered */
     public ServerSoftware getSoftware() {
         return brand != null ? brand.getSoftware() : ServerSoftware.UNKNOWN;
     }
@@ -148,6 +155,6 @@ public final class ServerInfo {
         if (isSingleplayer()) {
             return "ServerInfo(singleplayer" + (brand != null ? ", " + brand : "") + ")";
         }
-        return "ServerInfo(" + host + ":" + port + (brand != null ? ", " + brand : "") + ")";
+        return "ServerInfo(" + host + (hasPort() ? ":" + port : "") + (brand != null ? ", " + brand : "") + ")";
     }
 }

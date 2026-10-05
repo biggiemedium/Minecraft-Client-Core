@@ -1,8 +1,7 @@
 package dev.px.core.target;
 
-import dev.px.core.entity.TrackedEntity;
+import dev.px.core.entity.Tracked;
 import dev.px.core.math.Vec3;
-import dev.px.core.social.SocialService;
 
 /**
  * Where one query is looking from, handed to sorts and predicates that need
@@ -17,8 +16,7 @@ import dev.px.core.social.SocialService;
  */
 public final class TargetContext {
 
-    private SocialService social;
-    private TrackedEntity self;
+    private Tracked<?> self;
     private double originX;
     private double originY;
     private double originZ;
@@ -30,8 +28,7 @@ public final class TargetContext {
     TargetContext() {
     }
 
-    void begin(SocialService social, TrackedEntity self, double x, double y, double z) {
-        this.social = social;
+    void begin(Tracked<?> self, double x, double y, double z) {
         this.self = self;
         this.originX = x;
         this.originY = y;
@@ -49,12 +46,11 @@ public final class TargetContext {
     }
 
     void end() {
-        social = null;
         self = null;
     }
 
     /** @return the local player, or null when the query ran without one */
-    public TrackedEntity getSelf() {
+    public Tracked<?> getSelf() {
         return self;
     }
 
@@ -75,11 +71,11 @@ public final class TargetContext {
     }
 
     /** @return the squared distance from the origin to the entity's hitbox */
-    public double squaredDistanceTo(TrackedEntity entity) {
+    public double squaredDistanceTo(Tracked<?> entity) {
         return entity.squaredDistanceToBox(originX, originY, originZ);
     }
 
-    public double distanceTo(TrackedEntity entity) {
+    public double distanceTo(Tracked<?> entity) {
         return Math.sqrt(squaredDistanceTo(entity));
     }
 
@@ -87,21 +83,16 @@ public final class TargetContext {
      * @return the angle in degrees between where the local player looks and the
      *         centre of the entity's box, or 0 when there is no local player
      */
-    public double angleTo(TrackedEntity entity) {
+    public double angleTo(Tracked<?> entity) {
         double cosine = cosineTo(entity);
         return Math.toDegrees(Math.acos(Math.max(-1d, Math.min(1d, cosine))));
-    }
-
-    /** @return whether the entity is a friend */
-    public boolean isFriend(TrackedEntity entity) {
-        return social != null && social.isFriend(entity.getName());
     }
 
     /**
      * The cosine of {@link #angleTo}, which is all a field-of-view test needs:
      * comparing against {@code cos(fov / 2)} costs no inverse trigonometry.
      */
-    double cosineTo(TrackedEntity entity) {
+    double cosineTo(Tracked<?> entity) {
         if (!hasView) {
             return 1d;
         }

@@ -15,7 +15,7 @@ import dev.px.core.network.packet.PacketDescription;
  * Core.network().addListener(new PacketListener() {
  *     @Override
  *     public void onInbound(PacketDescription packet, long nanos) {
- *         if (packet.getKind() == PacketKind.VELOCITY) {
+ *         if (packet.getKind().is(Packets.VELOCITY)) {       // your own kind
  *             lastKnockback = nanos;
  *         }
  *     }

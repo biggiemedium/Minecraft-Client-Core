@@ -1,6 +1,6 @@
 package dev.px.core.target;
 
-import dev.px.core.entity.TrackedEntity;
+import dev.px.core.entity.Tracked;
 import dev.px.core.util.Validate;
 
 /**
@@ -8,11 +8,11 @@ import dev.px.core.util.Validate;
  * who trade places at the top of the ranking every other tick.
  *
  * <pre>{@code
- * private final TargetLock lock = Core.targets().lock(enemies);
+ * private final TargetLock<EntityPlayer> lock = Core.targets().lock(enemies);
  *
  * @Subscribe
  * private void onTick(TickEvent event) {
- *     TrackedEntity target = lock.update();
+ *     Tracked<EntityPlayer> target = lock.update();
  *     if (target == null) return;
  *     if (lock.hasChanged()) resetAim();
  *     aimAt(target);
@@ -26,22 +26,24 @@ import dev.px.core.util.Validate;
  * stops. Turn stickiness off and every {@link #update()} takes whichever is best
  * that tick.
  *
- * <p>Because {@link TrackedEntity} is one object per entity for its whole life,
- * holding one across ticks is safe: it keeps moving with the entity, and
- * {@link TrackedEntity#isTracked()} turns false when it leaves the world.
+ * <p>Because a {@link Tracked} is one object per entity for as long as its
+ * tracker keeps it, holding one across ticks is safe: it keeps moving with the
+ * entity, and {@link Tracked#isTracked()} turns false when the tracker lets go.
  *
  * <p>Game thread only.
+ *
+ * @param <E> the game's type for what the selector's tracker holds
  */
-public final class TargetLock {
+public final class TargetLock<E> {
 
     private final TargetService targets;
-    private final TargetSelector selector;
+    private final TargetSelector<E> selector;
 
     private boolean sticky = true;
-    private TrackedEntity current;
+    private Tracked<E> current;
     private boolean changed;
 
-    TargetLock(TargetService targets, TargetSelector selector) {
+    TargetLock(TargetService targets, TargetSelector<E> selector) {
         this.targets = Validate.notNull(targets, "targets");
         this.selector = Validate.notNull(selector, "selector");
     }
@@ -52,8 +54,8 @@ public final class TargetLock {
      *
      * @return the target, or null when nothing qualifies
      */
-    public TrackedEntity update() {
-        TrackedEntity previous = current;
+    public Tracked<E> update() {
+        Tracked<E> previous = current;
         if (!sticky || !targets.accepts(selector, previous)) {
             current = targets.best(selector);
         }
@@ -62,7 +64,7 @@ public final class TargetLock {
     }
 
     /** @return the target as of the last {@link #update()}, without checking it again */
-    public TrackedEntity get() {
+    public Tracked<E> get() {
         return current;
     }
 
@@ -87,7 +89,7 @@ public final class TargetLock {
      *
      * @return whether it passes now, and so was taken
      */
-    public boolean lockOn(TrackedEntity target) {
+    public boolean lockOn(Tracked<E> target) {
         if (!targets.accepts(selector, target)) {
             return false;
         }
@@ -100,12 +102,12 @@ public final class TargetLock {
         return sticky;
     }
 
-    public TargetLock setSticky(boolean sticky) {
+    public TargetLock<E> setSticky(boolean sticky) {
         this.sticky = sticky;
         return this;
     }
 
-    public TargetSelector getSelector() {
+    public TargetSelector<E> getSelector() {
         return selector;
     }
 }

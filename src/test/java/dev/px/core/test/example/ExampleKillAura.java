@@ -30,9 +30,11 @@ import lombok.Getter;
  *
  * <p>The aim it computes is real: a reach gate, a rotation solved with
  * {@link Vec3#rotationTo}, and a turn traced out over several ticks by
- * {@link RotationMath#step}. What it cannot do is find a target or swing at one
- * &mdash; Core has no entity type, so the adapter supplies the two positions
- * through {@link #aimAt} and performs the attack this module only counts.
+ * {@link RotationMath#step}. What it does not do is find a target or swing at one:
+ * a real client picks the target with a {@code TargetSelector} over a tracker of
+ * its game's entity type (README §12, and {@code TargetingTests}), which this
+ * suite has no game to supply. So the positions come in through {@link #aimAt},
+ * and the attack is only counted.
  *
  * <p>The counters exist only so the test suite can assert dispatch order and the
  * listening gate; a real module would not have them.

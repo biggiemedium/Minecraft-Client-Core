@@ -10,8 +10,7 @@ import dev.px.core.util.Validate;
  * from {@code PacketEvent}, and anything else can feed it by hand.
  *
  * <p><b>Order</b> is decided by majority, not unanimity: a counter that wraps
- * from {@code Short.MIN_VALUE} back to zero, or a vanilla inventory confirm
- * slipped in between, is one odd step in sixty-four and must not turn a clear
+ * back past zero, or one of the game's own transactions slipped in between, is one odd step in sixty-four and must not turn a clear
  * countdown into {@link TransactionPattern.Order#IRREGULAR}.
  *
  * <p>Fixed memory: two {@code long} arrays of {@link #DEFAULT_SAMPLE} entries.

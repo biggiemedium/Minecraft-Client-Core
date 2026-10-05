@@ -4,62 +4,60 @@ import dev.px.core.util.Validate;
 import dev.px.core.util.collect.RollingAverage;
 
 /**
- * Estimates the server's tick rate from its world-clock updates.
+ * Estimates the server's tick rate from its clock updates.
  *
- * <p>A vanilla server sends the world time every twenty ticks. At full speed
- * that is one a second; a server running at 10 TPS sends one every two seconds.
- * So each update says how many ticks passed (the world age moved on by that
- * much) and how long they took (the time since the last one arrived):
+ * <p>A server that tells the client its world age every so often is saying how
+ * many ticks passed (the age moved on by that much) and, by when the update
+ * arrives, how long they took:
  *
  * <pre>
  * tps = ticks elapsed / seconds elapsed
  * </pre>
  *
+ * <p>No number about any game is needed for that, and none is assumed: not the
+ * rate the server should run at, nor how often it sends its clock. Both are
+ * measured. {@link #setTargetTps} is yours to give, and only caps the estimate.
+ *
  * <p><b>Smoothing</b> is a ratio of sums over the last {@link #DEFAULT_WINDOW}
  * updates &mdash; total ticks over total time &mdash; not an average of each
  * update's rate. The difference matters when the network bunches packets: an
  * update held back 0.9s arrives 1.9s after the one before it, and the next 0.1s
- * after that. Averaged, 10.5 TPS and 200 TPS make 105; summed, it is 40 ticks in
- * 2 seconds, which is the truth.
+ * after that. Averaged, those rates are wildly apart; summed, they are the ticks
+ * that passed in the time that passed, which is the truth.
  *
  * <p><b>Stalls</b> show up before the next update does. If the server freezes,
  * no update arrives to report it, so {@link #getTps} also bounds the estimate by
- * the update that is overdue: three seconds without one means at most twenty
- * ticks in three seconds, whatever the window says.
+ * the update now overdue: once it is later than updates have been arriving, the
+ * ticks it would have reported are spread over the time actually waited.
  *
  * <p>This is the whole algorithm and it needs no bus, no service and no game:
- * call {@link #update} from wherever the time packet is seen. {@link TpsService}
+ * call {@link #update} from wherever the clock packet is seen. {@link TpsService}
  * is this, wired to {@code PacketEvent}.
  *
  * <p>Thread-safe: updates arrive on the network thread, reads come from the HUD.
  */
 public final class TpsTracker {
 
-    /** What a vanilla server runs at. */
-    public static final double VANILLA_TPS = 20d;
-
-    /** Updates to smooth over: about ten seconds at full speed. */
+    /** Updates to smooth over. A tuning knob, not a fact about any game. */
     public static final int DEFAULT_WINDOW = 10;
 
-    /** Ticks per update when the describer did not say. What vanilla sends. */
-    private static final long DEFAULT_TICKS_PER_UPDATE = 20L;
-
     /**
-     * An age jump bigger than this is a different world, not elapsed time: a
-     * minute's worth of ticks in one update. Re-baselines rather than reporting
-     * a spike of hundreds of TPS.
+     * An update carrying more than this many times the ticks updates have been
+     * carrying is a different world, not elapsed time: it re-baselines rather than
+     * reporting a spike. Measured against the server's own updates, so it assumes
+     * nothing about how often a server sends them. A tuning knob, not a fact about
+     * any game.
      */
-    private static final long MAX_TICKS_PER_UPDATE = 20L * 60L;
+    private static final double LEAP_FACTOR = 10d;
 
     private static final double NANOS_PER_SECOND = 1_000_000_000d;
 
     private final RollingAverage ticks;
     private final RollingAverage seconds;
-
-    private double targetTps = VANILLA_TPS;
+    private double targetTps = Double.NaN;
     private long lastNanos = Long.MIN_VALUE;
     private long lastAge = -1L;
-    private long lastTicks = DEFAULT_TICKS_PER_UPDATE;
+    private long lastTicks;
     private double lastSample = Double.NaN;
 
     public TpsTracker() {
@@ -73,25 +71,25 @@ public final class TpsTracker {
     }
 
     /**
-     * Records a world-clock update.
+     * Records a clock update.
      *
      * @param nanos when it arrived, on any monotonic clock
-     * @param worldAge the world's total age in ticks, or a negative number if
-     *        unknown, in which case vanilla's twenty ticks per update is assumed
+     * @param worldAge the world's total age in ticks; an update with a negative
+     *        age says nothing about ticks and is ignored
      */
     public synchronized void update(long nanos, long worldAge) {
+        if (worldAge < 0) {
+            return;
+        }
         if (lastNanos == Long.MIN_VALUE) {
             baseline(nanos, worldAge);
             return;
         }
-        long elapsedTicks = DEFAULT_TICKS_PER_UPDATE;
-        if (worldAge >= 0 && lastAge >= 0) {
-            elapsedTicks = worldAge - lastAge;
-            if (elapsedTicks <= 0 || elapsedTicks > MAX_TICKS_PER_UPDATE) {
-                // Went backwards or leapt ahead: a new world, or /time on the age.
-                baseline(nanos, worldAge);
-                return;
-            }
+        long elapsedTicks = worldAge - lastAge;
+        if (elapsedTicks <= 0) {
+            // Went backwards, or a duplicate: a new world, or the age was set.
+            baseline(nanos, worldAge);
+            return;
         }
         double elapsedSeconds = (nanos - lastNanos) / NANOS_PER_SECOND;
         if (elapsedSeconds <= 0d) {
@@ -99,9 +97,16 @@ public final class TpsTracker {
             lastAge = worldAge;
             return;
         }
+        if (hasEstimateLocked() && elapsedTicks > ticks.average() * LEAP_FACTOR) {
+            // Far more ticks than updates have been carrying: the age leapt, so
+            // this is a different world or a set clock, not elapsed time.
+            baseline(nanos, worldAge);
+            return;
+        }
+        double rate = elapsedTicks / elapsedSeconds;
         ticks.push(elapsedTicks);
         seconds.push(elapsedSeconds);
-        lastSample = Math.min(targetTps, elapsedTicks / elapsedSeconds);
+        lastSample = cap(rate);
         lastTicks = elapsedTicks;
         lastNanos = nanos;
         lastAge = worldAge;
@@ -110,16 +115,16 @@ public final class TpsTracker {
     /**
      * @param nowNanos the current time, on the clock {@link #update} is given
      * @return the smoothed tick rate, bounded by any update now overdue and never
-     *         above {@link #getTargetTps()}; the target itself before there is
-     *         an estimate, since a server is assumed healthy until shown otherwise
+     *         above {@link #getTargetTps()} when you set one. Before there is an
+     *         estimate, the target, or NaN with no target: nothing is assumed
      */
     public synchronized double getTps(long nowNanos) {
         if (!hasEstimateLocked()) {
             return targetTps;
         }
-        double tps = Math.min(targetTps, ticks.sum() / seconds.sum());
+        double tps = cap(ticks.sum() / seconds.sum());
         double sinceLast = (nowNanos - lastNanos) / NANOS_PER_SECOND;
-        double expected = lastTicks / targetTps;
+        double expected = seconds.average();
         if (sinceLast > expected) {
             tps = Math.min(tps, lastTicks / sinceLast);
         }
@@ -141,25 +146,44 @@ public final class TpsTracker {
         return lastNanos == Long.MIN_VALUE ? -1L : (nowNanos - lastNanos) / 1_000_000L;
     }
 
-    /** The rate the server is meant to run at. 20 unless the server changed it with {@code /tick rate}. */
+    /** @return the rate the server is meant to run at, or NaN when you have not said */
     public synchronized double getTargetTps() {
         return targetTps;
     }
 
-    /** @param targetTps what the server is meant to run at, for 1.20.3+ servers that change it */
+    public synchronized boolean hasTargetTps() {
+        return !Double.isNaN(targetTps);
+    }
+
+    /**
+     * @param targetTps what the server is meant to run at. The estimate never
+     *        reports above it, which keeps network bunching from reading as a
+     *        server running fast; and it is what {@link #getTps} reports before
+     *        there is a measurement. Change it whenever the server says its rate
+     *        changed
+     */
     public synchronized void setTargetTps(double targetTps) {
         Validate.check(targetTps > 0d, "target TPS must be positive");
         this.targetTps = targetTps;
     }
 
-    /** Forgets everything measured. For leaving a server. */
+    /** Forgets the target: the estimate is then uncapped, and NaN until measured. */
+    public synchronized void clearTargetTps() {
+        this.targetTps = Double.NaN;
+    }
+
+    /** Forgets everything measured, but not the target. For leaving a server. */
     public synchronized void reset() {
         ticks.clear();
         seconds.clear();
         lastNanos = Long.MIN_VALUE;
         lastAge = -1L;
-        lastTicks = DEFAULT_TICKS_PER_UPDATE;
+        lastTicks = 0L;
         lastSample = Double.NaN;
+    }
+
+    private double cap(double rate) {
+        return Double.isNaN(targetTps) ? rate : Math.min(targetTps, rate);
     }
 
     private boolean hasEstimateLocked() {
@@ -171,7 +195,7 @@ public final class TpsTracker {
         seconds.clear();
         lastNanos = nanos;
         lastAge = worldAge;
-        lastTicks = DEFAULT_TICKS_PER_UPDATE;
+        lastTicks = 0L;
         lastSample = Double.NaN;
     }
 }

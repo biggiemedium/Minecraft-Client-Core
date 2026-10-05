@@ -3,7 +3,7 @@ package dev.px.core.gui.click;
 import dev.px.core.layout.Content;
 
 import com.google.gson.JsonObject;
-import dev.px.core.config.Json;
+import dev.px.core.config.io.Json;
 import dev.px.core.gui.Component;
 import dev.px.core.gui.GuiStyle;
 import dev.px.core.gui.Screen;

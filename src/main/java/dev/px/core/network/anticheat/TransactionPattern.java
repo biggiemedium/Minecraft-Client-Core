@@ -6,14 +6,15 @@ import lombok.Getter;
 import java.util.Locale;
 
 /**
- * What the server's transactions (1.8&ndash;1.16) or pings (1.17+) look like.
+ * What the packets the server sends for the client to answer look like: the
+ * ones the describer gave {@code withTransaction}.
  *
- * <p>A vanilla server sends transactions only to confirm inventory clicks, with
- * small positive numbers, and never sends a ping of its own accord. An anticheat
- * that compensates for latency sends one every tick and watches for the reply,
- * which is what makes this worth measuring: the rate alone separates the two, and
- * the numbering &mdash; which way it counts, and on which side of zero &mdash;
- * is what a signature for a particular anticheat can match on.
+ * <p>A game's own server sends these for its own reasons, at its own pace. An
+ * anticheat that compensates for latency sends them on a short fixed period and
+ * watches for the reply, which is what makes this worth measuring: the rate
+ * separates the two, and the numbering &mdash; which way it counts, and on which
+ * side of zero &mdash; is what a signature for a particular anticheat can match
+ * on. What counts as normal for your game is your signature's to say.
  *
  * <p>Built by {@link TransactionTracker}; immutable.
  */
@@ -83,9 +84,9 @@ public final class TransactionPattern {
     }
 
     public enum Sign {
-        /** Every id is zero or more. Vanilla's inventory transactions are. */
+        /** Every id is zero or more. */
         POSITIVE,
-        /** Every id is below zero, which keeps them clear of vanilla's own. */
+        /** Every id is below zero. */
         NEGATIVE,
         MIXED,
         UNKNOWN

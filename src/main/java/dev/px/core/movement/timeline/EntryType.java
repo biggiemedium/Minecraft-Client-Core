@@ -1,6 +1,6 @@
 package dev.px.core.movement.timeline;
 
-import dev.px.core.network.packet.PacketKind;
+import dev.px.core.network.packet.PacketDescription;
 
 /** What a {@link TimelineEntry} records. */
 public enum EntryType {
@@ -21,8 +21,8 @@ public enum EntryType {
     MOTION_POST,
 
     /**
-     * The server overruling the client: an applied packet whose
-     * {@link PacketKind#isCorrection() kind is a correction}. Written straight
+     * The server overruling the client: an applied packet the describer marked
+     * {@link PacketDescription#asCorrection() as a correction}. Written straight
      * after that packet's entry and linked to it.
      */
     CORRECTION,

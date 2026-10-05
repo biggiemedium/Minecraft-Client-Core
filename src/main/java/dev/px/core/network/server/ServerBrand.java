@@ -4,33 +4,26 @@ import dev.px.core.util.Validate;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 
+import java.util.Collections;
+
 /**
- * The brand a server sent, and what it means.
+ * The brand a server sent, and which of your registered {@link ServerSoftware}
+ * it names.
  *
- * <p>A proxy puts itself in the brand alongside the server behind it, and the
- * two proxies in common use write it differently:
- *
- * <pre>
- * "Paper"                                        server Paper
- * "BungeeCord (git:...) &lt;- Paper"                proxy BungeeCord, server Paper
- * "Waterfall (git:...) &lt;- Purpur"                proxy Waterfall,  server Purpur
- * "Paper (Velocity)"                             proxy Velocity,   server Paper
- * </pre>
- *
- * <p>{@link #getSoftware()} is always the server behind any proxy, since that is
- * what runs the world the player is in; {@link #getProxy()} is the proxy, or
- * null when there is none.
+ * <p>{@link #getSoftware()} is the server that runs the world the player is in,
+ * behind any proxy; {@link #getProxy()} is the proxy in front of it, or null.
+ * Both are found by matching the whole brand against what was registered, so a
+ * brand naming nothing registered is {@link ServerSoftware#UNKNOWN}, and the raw
+ * text is always kept.
  */
 @Getter
 @EqualsAndHashCode
 public final class ServerBrand {
 
-    private static final String BUNGEE_ARROW = "<-";
-
     /** Exactly what the server sent. */
     private final String raw;
 
-    /** The server the player is on, behind any proxy. */
+    /** The server the player is on, behind any proxy; {@link ServerSoftware#UNKNOWN} when nothing registered matched. */
     private final ServerSoftware software;
 
     /** The proxy in front of it, or null. */
@@ -42,29 +35,31 @@ public final class ServerBrand {
         this.proxy = proxy;
     }
 
-    public static ServerBrand parse(String raw) {
+    /**
+     * @param known the software to recognise, in priority order: where the brand
+     *        names two servers, or two proxies, the first wins
+     */
+    public static ServerBrand parse(String raw, Iterable<ServerSoftware> known) {
         Validate.notNull(raw, "raw");
-        String brand = raw.trim();
-
-        int arrow = brand.indexOf(BUNGEE_ARROW);
-        if (arrow >= 0) {
-            ServerSoftware front = ServerSoftware.identify(brand.substring(0, arrow));
-            ServerSoftware behind = ServerSoftware.identify(brand.substring(arrow + BUNGEE_ARROW.length()));
-            return new ServerBrand(raw, behind, front.isProxy() ? front : ServerSoftware.BUNGEECORD);
-        }
-
-        int open = brand.lastIndexOf('(');
-        if (open > 0 && brand.endsWith(")")) {
-            ServerSoftware suffix = ServerSoftware.identify(brand.substring(open + 1, brand.length() - 1));
-            if (suffix.isProxy()) {
-                return new ServerBrand(raw, ServerSoftware.identify(brand.substring(0, open)), suffix);
+        Validate.notNull(known, "known");
+        ServerSoftware software = null;
+        ServerSoftware proxy = null;
+        for (ServerSoftware candidate : known) {
+            if (!candidate.matches(raw)) {
+                continue;
+            }
+            if (candidate.isProxy()) {
+                proxy = proxy == null ? candidate : proxy;
+            } else {
+                software = software == null ? candidate : software;
             }
         }
+        return new ServerBrand(raw, software != null ? software : ServerSoftware.UNKNOWN, proxy);
+    }
 
-        ServerSoftware only = ServerSoftware.identify(brand);
-        return only.isProxy()
-                ? new ServerBrand(raw, ServerSoftware.UNKNOWN, only)
-                : new ServerBrand(raw, only, null);
+    /** A brand recognising nothing: only the raw text. */
+    public static ServerBrand of(String raw) {
+        return parse(raw, Collections.<ServerSoftware>emptyList());
     }
 
     public boolean isProxied() {

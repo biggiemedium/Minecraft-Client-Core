@@ -9,7 +9,6 @@ import dev.px.core.network.NetworkService;
 import dev.px.core.network.PacketListener;
 import dev.px.core.network.packet.PacketDescription;
 import dev.px.core.network.packet.PacketFields;
-import dev.px.core.network.packet.PacketKind;
 import dev.px.core.network.server.ServerChangeEvent;
 import dev.px.core.network.server.ServerInfo;
 import dev.px.core.network.server.ServerService;
@@ -31,8 +30,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Which anticheat the server is probably running.
  *
  * <pre>{@code
- * Core.anticheat().getPrimary().map(Detection::getName).orElse("None");   // "Watchdog"
- * if (Core.anticheat().isDetected("Watchdog")) useSaferMode();
+ * // what to look for is yours: Core registers no signatures of its own
+ * Core.anticheat().register(AntiCheatSignature.onServer("example.net", "MyAC"));
+ * Core.anticheat().register(AntiCheatSignatures.transactionBased(2, 10));
+ *
+ * Core.anticheat().getPrimary().map(Detection::getName).orElse("None");   // "MyAC"
+ * if (Core.anticheat().isDetected("MyAC")) useSaferMode();
  * }</pre>
  *
  * <h2>How it decides</h2>
@@ -51,19 +54,20 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * <h2>What the adapter supplies</h2>
  *
- * <p>Everything {@code Core.server()} needs, plus the describer classifying
- * inbound transactions and pings with {@link PacketDescription#transaction}.
- * Without that, detection still works from the address and brand.
+ * <p>Signatures, with {@link #register}: Core ships none, so with none
+ * registered nothing is ever detected. Everything {@code Core.server()} needs.
+ * And, for signatures that read timing, the describer giving the packets the
+ * server sends for the client to answer {@link PacketDescription#withTransaction}.
  *
- * <p>Re-evaluated once a second on the game thread, and at once when the server
+ * <p>Re-evaluated every {@link #setEvaluateEveryTicks few ticks} on the game thread, and at once when the server
  * changes; a change in the result posts an {@link AntiCheatChangeEvent}. The
  * transaction history starts over whenever the server does, so a lobby's
  * anticheat is not attributed to the game server behind the same proxy.
  */
 public final class AntiCheatService implements Service {
 
-    /** Ticks between re-evaluations. */
-    private static final int EVALUATE_EVERY = 20;
+    /** Ticks between re-evaluations until {@link #setEvaluateEveryTicks} says otherwise. A tuning knob, not a fact about any game. */
+    public static final int DEFAULT_EVALUATE_EVERY_TICKS = 20;
 
     private static final Comparator<Detection> RANKING = Comparator
             .comparing(Detection::getConfidence).reversed()
@@ -78,7 +82,7 @@ public final class AntiCheatService implements Service {
     private final Set<AntiCheatSignature> failed = ConcurrentHashMap.newKeySet();
     private final Listener listener = new Listener();
     private final Traffic traffic = new Traffic();
-    private final TickTimer timer = TickTimer.every(EVALUATE_EVERY);
+    private volatile TickTimer timer = TickTimer.every(DEFAULT_EVALUATE_EVERY_TICKS);
 
     private volatile List<Detection> detections = Collections.emptyList();
     private Subscription packets;
@@ -88,7 +92,6 @@ public final class AntiCheatService implements Service {
         this.bus = Validate.notNull(bus, "bus");
         this.network = Validate.notNull(network, "network");
         this.server = Validate.notNull(server, "server");
-        signatures.addAll(AntiCheatSignatures.defaults());
     }
 
     @Override
@@ -99,7 +102,7 @@ public final class AntiCheatService implements Service {
     @Override
     @SuppressWarnings("unchecked")
     public Class<? extends Service>[] dependsOn() {
-        return new Class[] { NetworkService.class };
+        return new Class[] { NetworkService.class, ServerService.class };
     }
 
     @Override
@@ -159,7 +162,7 @@ public final class AntiCheatService implements Service {
         return signatures.remove(signature);
     }
 
-    /** Removes every signature, the built-in ones included, for a client that brings its own. */
+    /** Removes every signature. */
     public void clearSignatures() {
         signatures.clear();
         failed.clear();
@@ -170,8 +173,14 @@ public final class AntiCheatService implements Service {
         return Collections.unmodifiableList(new ArrayList<>(signatures));
     }
 
+    /** @param ticks how often signatures are asked again, between server changes */
+    public void setEvaluateEveryTicks(int ticks) {
+        Validate.check(ticks > 0, "ticks must be positive");
+        timer = TickTimer.every(ticks);
+    }
+
     /**
-     * Asks every signature now, rather than waiting for the next second.
+     * Asks every signature now, rather than waiting for the next evaluation.
      *
      * <p>Call from the game thread: a changed result is posted from here.
      *
@@ -215,8 +224,9 @@ public final class AntiCheatService implements Service {
 
         @Override
         public void onInbound(PacketDescription packet, long nanos) {
-            if (packet.getKind() == PacketKind.TRANSACTION) {
-                transactions.record(nanos, packet.getLong(PacketFields.ID));
+            Long id = packet.getLong(PacketFields.TRANSACTION);
+            if (id != null) {
+                transactions.record(nanos, id);
             }
         }
     }

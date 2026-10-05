@@ -14,13 +14,13 @@ import java.util.function.Function;
  *
  * <pre>{@code
  * Core.network().setDescriber(PacketDescriber.byClass()
- *         .on(S03PacketTimeUpdate.class, p ->
- *                 PacketDescription.timeUpdate("S03PacketTimeUpdate", p.getTotalWorldTime()))
- *         .on(S32PacketConfirmTransaction.class, p ->
- *                 PacketDescription.transaction("S32PacketConfirmTransaction", p.getActionNumber()))
- *         .on(S08PacketPlayerPosLook.class, p ->
- *                 PacketDescription.of("S08PacketPlayerPosLook", PacketKind.TELEPORT)
- *                         .withPosition(Vec3.of(p.getX(), p.getY(), p.getZ())))
+ *         .on(S03PacketTimeUpdate.class, p -> PacketDescription.of("S03PacketTimeUpdate", Packets.TIME)
+ *                 .withWorldAge(p.getTotalWorldTime()))
+ *         .on(S32PacketConfirmTransaction.class, p -> PacketDescription.of("S32PacketConfirmTransaction", Packets.TRANSACTION)
+ *                 .withTransaction(p.getActionNumber()))
+ *         .on(S08PacketPlayerPosLook.class, p -> PacketDescription.of("S08PacketPlayerPosLook", Packets.TELEPORT)
+ *                 .asCorrection()
+ *                 .withPosition(Vec3.of(p.getX(), p.getY(), p.getZ())))
  *         .build());
  * }</pre>
  *

@@ -2,7 +2,7 @@ package dev.px.core.gui;
 
 import com.google.gson.JsonObject;
 import dev.px.core.config.ConfigSection;
-import dev.px.core.config.Json;
+import dev.px.core.config.io.Json;
 import dev.px.core.gui.click.ClickGuiScreen;
 import dev.px.core.gui.setting.DefaultRenderers;
 import dev.px.core.input.Key;

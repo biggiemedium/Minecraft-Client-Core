@@ -11,17 +11,17 @@ package dev.px.core.network.packet;
  * PacketDescriber describer = packet -> {
  *     if (packet instanceof S08PacketPlayerPosLook) {
  *         S08PacketPlayerPosLook p = (S08PacketPlayerPosLook) packet;
- *         return PacketDescription.of("S08PacketPlayerPosLook", PacketKind.TELEPORT)
+ *         return PacketDescription.of("S08PacketPlayerPosLook", Packets.TELEPORT)   // your kind
+ *                 .asCorrection()                                                  // the role Core reads
  *                 .withPosition(Vec3.of(p.getX(), p.getY(), p.getZ()))
- *                 .withRotation(Vec2.rotation(p.getYaw(), p.getPitch()))
- *                 .with("relative", p.func_179834_f().toString());
+ *                 .withRotation(Vec2.rotation(p.getYaw(), p.getPitch()));
  *     }
  *     if (packet instanceof C0FPacketConfirmTransaction) {
  *         C0FPacketConfirmTransaction p = (C0FPacketConfirmTransaction) packet;
- *         return PacketDescription.of("C0FPacketConfirmTransaction", PacketKind.TRANSACTION)
+ *         return PacketDescription.of("C0FPacketConfirmTransaction", Packets.TRANSACTION)
  *                 .withCorrelationKey("transaction:" + p.getUid());
  *     }
- *     return PacketDescription.of(packet.getClass().getSimpleName(), PacketKind.OTHER);
+ *     return null;                                                                 // the default
  * };
  * }</pre>
  *
@@ -44,8 +44,8 @@ package dev.px.core.network.packet;
 @FunctionalInterface
 public interface PacketDescriber {
 
-    /** The class's simple name, classified {@link PacketKind#OTHER}. What the recorder uses until one is installed. */
-    PacketDescriber DEFAULT = packet -> PacketDescription.of(packet.getClass().getSimpleName(), PacketKind.OTHER);
+    /** The class's simple name, filed under {@link PacketKind#OTHER}. What is used until one is installed. */
+    PacketDescriber DEFAULT = packet -> PacketDescription.of(packet.getClass().getSimpleName());
 
     /**
      * @param packet whatever the adapter put in the {@code PacketEvent}, never null

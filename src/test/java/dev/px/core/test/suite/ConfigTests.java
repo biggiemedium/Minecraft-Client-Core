@@ -58,8 +58,15 @@ public final class ConfigTests {
         client.getClock().getShowSeconds().set(false);
 
         config.save(PROFILE);
+        config.saveShared();
         Checks.check("the profile appears on disk", config.exists(PROFILE));
         Checks.check("and in the listing", config.listProfiles().contains(PROFILE));
+        Checks.check("as a folder, one file per section",
+                java.nio.file.Files.exists(config.getProfileDirectory(PROFILE).resolve("modules.json"))
+                        && java.nio.file.Files.exists(config.getProfileDirectory(PROFILE).resolve("hud.json")));
+        Checks.check("with friends and accounts shared by every profile",
+                java.nio.file.Files.exists(config.getSharedDirectory().resolve("friends.json"))
+                        && java.nio.file.Files.exists(config.getSharedDirectory().resolve("accounts.json")));
 
         // ---- scramble everything -----------------------------------------------
         aura.getReach().set(3f);
@@ -89,7 +96,8 @@ public final class ConfigTests {
 
         Checks.checkEquals("the theme round-trips",
                 "Sunset", client.getCore().getThemeService().getActive().getName());
-        Checks.check("friends round-trip", client.getCore().getSocialService().isFriend("notch"));
+        Checks.check("friends are shared, so switching profile does not bring back one removed",
+                !client.getCore().getSocialService().isFriend("notch"));
         Checks.checkEquals("service settings round-trip",
                 9f, client.getCore().getNotificationService().getMaxVisible().getInt());
 
@@ -103,10 +111,13 @@ public final class ConfigTests {
         Checks.checkEquals("the profile becomes active", PROFILE, config.getActiveProfile());
         Checks.checkEquals("a load event is posted so derived state can rebuild", 1f, loadEvents.get());
 
+        config.load();
+        Checks.check("a full load restores the shared sections too", client.getCore().getSocialService().isFriend("notch"));
+
         // ---- a second load must not corrupt list-shaped sections ------------------
         // Regression: SocialService and AccountService replaced their lists by
         // iterating Registry.all(), a live view, and threw on any second load.
-        Checks.checkSurvives("loading a second time does not throw", () -> config.load(PROFILE));
+        Checks.checkSurvives("loading a second time does not throw", () -> config.load());
         Checks.check("and list sections survive it",
                 client.getCore().getSocialService().isFriend("notch"));
         Checks.checkEquals("without duplicating entries",

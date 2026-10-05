@@ -23,8 +23,8 @@ import java.util.function.Predicate;
  * Timeline timeline = Core.timeline().end();
  *
  * // what arrived in answer to a movement packet, within five ticks
- * for (TimelineEntry sent : timeline.ofKind(PacketKind.MOVEMENT)) {
- *     List<TimelineEntry> replies = timeline.responsesTo(sent, PacketKind.TELEPORT, 5);
+ * for (TimelineEntry sent : timeline.ofKind(Packets.MOVEMENT)) {          // your own kinds
+ *     List<TimelineEntry> replies = timeline.responsesTo(sent, Packets.TELEPORT, 5);
  * }
  *
  * // the exact reply to a transaction, by key rather than by timing
@@ -157,9 +157,9 @@ public final class Timeline {
         return filter(entry -> entry.getType() == type);
     }
 
-    /** @return packet entries of this kind, in every phase */
+    /** @return packet entries of this kind, compared by name, in every phase */
     public List<TimelineEntry> ofKind(PacketKind kind) {
-        return filter(entry -> entry.isPacket() && entry.getKind() == kind);
+        return filter(entry -> entry.isPacket() && entry.isKind(kind));
     }
 
     public List<TimelineEntry> filter(Predicate<? super TimelineEntry> test) {
@@ -219,7 +219,7 @@ public final class Timeline {
             }
             boolean arrival = entry.getPhase() == Phase.RECEIVED
                     || (entry.getPhase() == Phase.APPLIED && !entry.hasLink());
-            if (entry.isPacket() && arrival && (kind == null || entry.getKind() == kind)) {
+            if (entry.isPacket() && arrival && (kind == null || entry.isKind(kind))) {
                 found.add(entry);
             }
         }

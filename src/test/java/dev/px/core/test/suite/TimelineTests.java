@@ -174,7 +174,7 @@ public final class TimelineTests {
 
         TimelineEntry move = timeline.getEntries().get(3);
         Checks.checkEquals("a sent packet is outbound", Direction.OUTBOUND, move.getDirection());
-        Checks.checkEquals("with the describer's kind", PacketKind.MOVEMENT, move.getKind());
+        Checks.checkEquals("with the name of the describer's kind", "MOVEMENT", move.getKind());
         Checks.checkEquals("and its position", Vec3.of(0.5d, 64d, 0.5d), move.getPosition());
 
         TimelineEntry world = timeline.getEntries().get(9);
@@ -226,9 +226,9 @@ public final class TimelineTests {
         Timeline timeline = rig.recorder.end();
 
         TimelineEntry received = timeline.filter(e -> e.getPhase() == Phase.RECEIVED
-                && e.getKind() == PacketKind.TELEPORT).get(0);
+                && e.isKind(Packets.TELEPORT)).get(0);
         TimelineEntry applied = timeline.filter(e -> e.getPhase() == Phase.APPLIED
-                && e.getKind() == PacketKind.TELEPORT).get(0);
+                && e.isKind(Packets.TELEPORT)).get(0);
         Checks.checkEquals("received on the network thread during tick 1", 1L, received.getTick());
         Checks.checkEquals("applied on the game thread during tick 2", 2L, applied.getTick());
         Checks.checkEquals("the applied half points at the received half", received.getSeq(), applied.getLinkedSeq());
@@ -247,11 +247,11 @@ public final class TimelineTests {
 
         Checks.checkEquals("velocity is a correction too", 2, timeline.ofType(EntryType.CORRECTION).size());
         TimelineEntry otherTransaction = timeline.filter(e -> e.getPhase() == Phase.APPLIED
-                && e.getKind() == PacketKind.TRANSACTION).get(0);
+                && e.isKind(Packets.TRANSACTION)).get(0);
         Checks.check("linking is by instance, not by equality", !otherTransaction.hasLink());
         Checks.checkEquals("a received half left waiting is simply unlinked", null,
                 timeline.linked(timeline.filter(e -> e.getPhase() == Phase.RECEIVED
-                        && e.getKind() == PacketKind.TRANSACTION).get(0)));
+                        && e.isKind(Packets.TRANSACTION)).get(0)));
     }
 
     private static void crossThreadOrdering() throws InterruptedException {
@@ -322,15 +322,15 @@ public final class TimelineTests {
         rig.bus.post(PacketEvent.received(new Teleport(Vec3.ZERO)));
         Timeline timeline = rig.recorder.end();
 
-        List<TimelineEntry> replies = timeline.responsesTo(sent, PacketKind.TELEPORT, 2);
+        List<TimelineEntry> replies = timeline.responsesTo(sent, Packets.TELEPORT, 2);
         Checks.checkEquals("a teleport inside the window answers the move", 1, replies.size());
         Checks.checkEquals("and it is the first one", 2L, replies.get(0).getTick());
         Checks.checkEquals("with no kind, every arrival in the window counts", 2,
                 timeline.responsesTo(sent, null, 2).size());
         Checks.checkEquals("a wider window reaches the later teleport", 2,
-                timeline.responsesTo(sent, PacketKind.TELEPORT, 10).size());
+                timeline.responsesTo(sent, Packets.TELEPORT, 10).size());
 
-        TimelineEntry inbound = timeline.filter(e -> e.getKind() == PacketKind.TRANSACTION && e.isInbound()).get(0);
+        TimelineEntry inbound = timeline.filter(e -> e.isKind(Packets.TRANSACTION) && e.isInbound()).get(0);
         List<TimelineEntry> answer = timeline.correlated(inbound);
         Checks.checkEquals("a transaction pairs with its reply by key", 1, answer.size());
         Checks.check("travelling the other way", answer.get(0).isOutbound());
@@ -355,7 +355,7 @@ public final class TimelineTests {
         Checks.checkThrows("a missing mark is an error", IllegalArgumentException.class,
                 () -> timeline.between("jump", "never"));
 
-        rig.recorder.setFilter(description -> description.getKind() != PacketKind.ACTION);
+        rig.recorder.setFilter(description -> !description.getKind().is(Packets.ACTION));
         rig.recorder.begin("filtered");
         rig.bus.post(PacketEvent.sent(new Action()));
         rig.bus.post(PacketEvent.sent(new Move()));
@@ -397,7 +397,7 @@ public final class TimelineTests {
 
         Checks.checkEquals("a throwing describer costs the description, not the entry", 3, timeline.size());
         Checks.checkEquals("falling back to the class name", "Action", timeline.getEntries().get(0).getPacketType());
-        Checks.checkEquals("classified as other", PacketKind.OTHER, timeline.getEntries().get(0).getKind());
+        Checks.checkEquals("filed under OTHER", PacketKind.OTHER.getName(), timeline.getEntries().get(0).getKind());
         Checks.checkEquals("logged once, not per packet", 1, rig.logger.errorCount());
         Checks.checkEquals("a null description falls back too", "Move", timeline.getEntries().get(2).getPacketType());
     }
@@ -471,30 +471,35 @@ public final class TimelineTests {
         return true;
     }
 
+    /** The test client's own packet kinds. Nothing like this exists in Core. */
+    private enum Packets implements PacketKind { MOVEMENT, ACTION, TELEPORT, VELOCITY, TRANSACTION }
+
     /** The adapter's describer, for the fake packets below. */
     private static PacketDescription describe(Object packet) {
         if (packet instanceof Move) {
-            return PacketDescription.of("C04Move", PacketKind.MOVEMENT)
+            return PacketDescription.of("C04Move", Packets.MOVEMENT)
                     .withPosition(Vec3.of(0.5d, 64d, 0.5d))
                     .withOnGround(true);
         }
         if (packet instanceof Action) {
-            return PacketDescription.of("Action", PacketKind.ACTION).with("action", "START_SPRINTING");
+            return PacketDescription.of("Action", Packets.ACTION).with("action", "START_SPRINTING");
         }
         if (packet instanceof Teleport) {
-            return PacketDescription.of("S08Teleport", PacketKind.TELEPORT)
+            return PacketDescription.of("S08Teleport", Packets.TELEPORT)
+                    .asCorrection()
                     .withPosition(((Teleport) packet).position)
                     .withRotation(Vec2.rotation(0f, 0f))
                     .with("teleportId", 1)
                     .with("relative", false);
         }
         if (packet instanceof Velocity) {
-            return PacketDescription.of("S12Velocity", PacketKind.VELOCITY)
+            return PacketDescription.of("S12Velocity", Packets.VELOCITY)
+                    .asCorrection()
                     .withVelocity(Vec3.of(0d, 0.4d, 0d))
                     .with("scale", 8000.5d);
         }
         if (packet instanceof Transaction) {
-            return PacketDescription.of("Transaction", PacketKind.TRANSACTION)
+            return PacketDescription.of("Transaction", Packets.TRANSACTION)
                     .withCorrelationKey("tx:" + ((Transaction) packet).uid);
         }
         return null;
