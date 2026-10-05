@@ -5,11 +5,15 @@ Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
 ```
-src/test/java/dev/px/core/test/
+core/src/test/java/dev/px/core/test/
 ├── CoreSmokeTest.java     runs every suite
-├── harness/               Checks, FakePlatform, TestClient (also the bootstrap example)
+├── harness/               TestClient (also the bootstrap example) and test doubles
 ├── example/               reference modules, commands and HUD elements
 └── suite/                 one file per subsystem
+
+core/src/testFixtures/java/dev/px/core/test/harness/
+                           Checks, FakePlatform, RecordingLogger — shared with every
+                           module's tests through testFixtures(project(':core'))
 ```
 
 | Suite | Covers |

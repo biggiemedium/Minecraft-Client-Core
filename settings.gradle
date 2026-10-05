@@ -1,1 +1,6 @@
 rootProject.name = 'Core'
+
+// One repository, several libraries. Each is its own jar, and each depends on
+// :core and never the other way round, so Core stays usable on its own.
+include 'core'
+include 'combat'

@@ -284,7 +284,7 @@ There is a working harness in the test sources: a real GLFW window, a real
 NanoVG backend, five elements and an edit mode.
 
 ```
-./gradlew visual
+./gradlew :core:visual
 ```
 
 `E` toggles edit mode. Drag to move, drag a corner to scale, scroll to scale,

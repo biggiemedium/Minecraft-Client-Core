@@ -1,86 +1,40 @@
-// Standalone build for the Core package.
+// Settings every library in this repository shares.
 //
-// Core has NO Minecraft on its classpath. That is deliberate: if this project
-// compiles, Core is provably free of net.minecraft imports and can be dropped
-// into a project for any game version.
-//
-// To use Core in a version project, copy src/main/java/dev/px/core into that
-// project's source tree and add the same three dependencies below.
+// Core has NO Minecraft on its classpath, and neither does anything built on it.
+// That is deliberate: if a module compiles here, it is provably free of
+// net.minecraft imports and can be dropped into a project for any game version.
 
-plugins {
-    id 'java'
-}
+subprojects {
+    apply plugin: 'java-library'
 
-group = 'dev.px'
-version = '1.0'
+    group = 'dev.px'
+    version = '1.0'
 
-sourceCompatibility = targetCompatibility = JavaVersion.VERSION_1_8
-
-repositories {
-    mavenCentral()
-}
-
-// LWJGL natives for whatever machine this is being built on.
-ext {
-    lwjglVersion = '3.3.3'
-    lwjglNatives = {
-        String os = System.getProperty('os.name').toLowerCase()
-        String arch = System.getProperty('os.arch').toLowerCase()
-        boolean arm = arch.startsWith('aarch64') || arch.startsWith('arm')
-        if (os.contains('mac')) {
-            return arm ? 'natives-macos-arm64' : 'natives-macos'
-        }
-        if (os.contains('win')) {
-            return 'natives-windows'
-        }
-        return arm ? 'natives-linux-arm64' : 'natives-linux'
-    }()
-}
-
-// A runnable visual harness: a real window, a real renderer, the real HUD.
-tasks.register('visual', JavaExec) {
-    group = 'verification'
-    description = 'Opens a window and renders the HUD with NanoVG.'
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'dev.px.core.test.visual.VisualTest'
-    // GLFW must own the first thread on macOS, or creating a window aborts.
-    if (System.getProperty('os.name').toLowerCase().contains('mac')) {
-        jvmArgs '-XstartOnFirstThread'
+    java {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
-}
 
-dependencies {
-    // Lombok: compile-time only, nothing lands in the jar.
-    compileOnly 'org.projectlombok:lombok:1.18.30'
-    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+    repositories {
+        mavenCentral()
+    }
 
-    // Gson ships with Minecraft on every version, so it is compileOnly here.
-    compileOnly 'com.google.code.gson:gson:2.8.9'
+    dependencies {
+        // Lombok: compile-time only, nothing lands in the jar.
+        compileOnly 'org.projectlombok:lombok:1.18.30'
+        annotationProcessor 'org.projectlombok:lombok:1.18.30'
+        testCompileOnly 'org.projectlombok:lombok:1.18.30'
+        testAnnotationProcessor 'org.projectlombok:lombok:1.18.30'
 
-    testCompileOnly 'org.projectlombok:lombok:1.18.30'
-    testAnnotationProcessor 'org.projectlombok:lombok:1.18.30'
+        // Gson ships with Minecraft on every version, so it is compileOnly here.
+        compileOnly 'com.google.code.gson:gson:2.8.9'
 
-    // The test suite uses Gson directly (SettingTests round-trips settings) and
-    // runs with no Minecraft to supply it, so tests need it for real -- compileOnly
-    // above does not reach the test classpaths.
-    testImplementation 'com.google.code.gson:gson:2.8.9'
+        // The test suites run with no Minecraft to supply it, so tests need it for real.
+        testImplementation 'com.google.code.gson:gson:2.8.9'
+    }
 
-    // ---- visual harness only -------------------------------------------------
-    // LWJGL + NanoVG, so the HUD can be driven by a real renderer in a real
-    // window. Test scope on purpose: Core itself still has no dependencies, and
-    // `compileJava` still proves it.
-    testImplementation platform("org.lwjgl:lwjgl-bom:$lwjglVersion")
-    testImplementation 'org.lwjgl:lwjgl'
-    testImplementation 'org.lwjgl:lwjgl-glfw'
-    testImplementation 'org.lwjgl:lwjgl-opengl'
-    testImplementation 'org.lwjgl:lwjgl-nanovg'
-    testRuntimeOnly "org.lwjgl:lwjgl::$lwjglNatives"
-    testRuntimeOnly "org.lwjgl:lwjgl-glfw::$lwjglNatives"
-    testRuntimeOnly "org.lwjgl:lwjgl-opengl::$lwjglNatives"
-    testRuntimeOnly "org.lwjgl:lwjgl-nanovg::$lwjglNatives"
-}
-
-tasks.withType(JavaCompile) {
-    options.encoding = 'UTF-8'
-    options.compilerArgs << '-Xlint:-unchecked' << '-parameters'
+    tasks.withType(JavaCompile) {
+        options.encoding = 'UTF-8'
+        options.compilerArgs << '-Xlint:-unchecked' << '-parameters'
+    }
 }

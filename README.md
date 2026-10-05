@@ -8,8 +8,16 @@ fight over the player's head.
 
 Core has **no Minecraft on its classpath** — this project compiles standalone,
 which proves there is no `net.minecraft` import hiding in it. Copy
-`src/main/java/dev/px/core` into a project for any version and start writing
+`core/src/main/java/dev/px/core` into a project for any version and start writing
 modules, HUD elements and screens.
+
+The repository holds Core and the optional libraries built on it, each its own
+Gradle module and its own jar:
+
+| Module | What it is |
+|---|---|
+| `core/` | everything in the contents below |
+| [`combat/`](combat/README.md) | PvP built on Core: crystal and explosion rules, a damage monitor, test vectors — the planner is next |
 
 **Requires:** Java 8, Lombok (compile-time only), Gson (already ships with
 Minecraft). On ForgeGradle 2.x (1.8.9), which predates the `annotationProcessor`

@@ -1,0 +1,7 @@
+// Combat: crystal, anchor and melee PvP built on Core. Optional: a client that
+// wants only Core never pulls this in.
+
+dependencies {
+    api project(':core')
+    testImplementation testFixtures(project(':core'))
+}
