@@ -2,6 +2,7 @@ package dev.px.combat.search.engine;
 
 import dev.px.combat.search.rule.Reach;
 import dev.px.combat.world.BlockView;
+import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 
 import java.util.function.Consumer;
@@ -26,6 +27,37 @@ public interface UseDevice<E, X> extends Device<E> {
 
     /** @return the blocks as its explosion would find them */
     BlockView blocksWhenFired(X explosive);
+
+    /**
+     * @return where you would look to set it off: what your {@code AimCost} is
+     *         asked about. Asked only once {@link #inReach} said yes. Where it
+     *         explodes from, unless overridden.
+     */
+    default Vec3 aim(X explosive) {
+        return origin(explosive);
+    }
+
+    /**
+     * @return whether your server would accept setting it off from {@code eye}:
+     *         for one you click, a click your rules allow exists. Always, unless
+     *         overridden. Asked before {@link #aim(Vec3, Object)}
+     */
+    default boolean clickable(Vec3 eye, X explosive) {
+        return true;
+    }
+
+    /** @return where you would look from {@code eye} to set it off: {@link #aim(Object)} unless overridden */
+    default Vec3 aim(Vec3 eye, X explosive) {
+        return aim(explosive);
+    }
+
+    /**
+     * @return the room it takes up: matched against what you placed, to know it
+     *         as yours. Null unless overridden, which never matches
+     */
+    default Box occupies(X explosive) {
+        return null;
+    }
 
     /** @return what it is remembered by between ticks, for inhibit: equal keys are the same explosive */
     Object key(X explosive);

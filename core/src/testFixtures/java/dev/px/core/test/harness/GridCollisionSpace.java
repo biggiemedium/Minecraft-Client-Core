@@ -3,8 +3,6 @@ package dev.px.core.test.harness;
 import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.movement.simulation.CollisionSpace;
-import lombok.Getter;
-import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -28,12 +26,18 @@ public final class GridCollisionSpace implements CollisionSpace {
     private final Map<Long, Double> blocks = new HashMap<>();
 
     /** How many times {@link #boxesIn} has been asked. */
-    @Getter
     private int queryCount;
 
     /** Reported for every position, so a test can make the whole world ice. */
-    @Setter
     private double slipperiness = 0.6d;
+
+    public int getQueryCount() {
+        return queryCount;
+    }
+
+    public void setSlipperiness(double slipperiness) {
+        this.slipperiness = slipperiness;
+    }
 
     /** Adds a full cube. */
     public GridCollisionSpace solid(int x, int y, int z) {
@@ -43,6 +47,12 @@ public final class GridCollisionSpace implements CollisionSpace {
     /** Adds a box of {@code height} sitting on the bottom of that block. */
     public GridCollisionSpace solid(int x, int y, int z, double height) {
         blocks.put(key(x, y, z), height);
+        return this;
+    }
+
+    /** Takes the block at this position away. */
+    public GridCollisionSpace remove(int x, int y, int z) {
+        blocks.remove(key(x, y, z));
         return this;
     }
 

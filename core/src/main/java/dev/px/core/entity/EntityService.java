@@ -287,7 +287,7 @@ public final class EntityService implements Service {
             return;
         }
         if (self == null) {
-            self = new Tracked<>(handle);
+            self = new Tracked<>(handle, EntityTracker.DEFAULT_HISTORY, EntityTracker.DEFAULT_UPDATE_GAP);
         }
         self.update(reading, tick);
     }

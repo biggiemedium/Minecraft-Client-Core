@@ -1,14 +1,17 @@
 package dev.px.combat.search.timing;
 
 import dev.px.core.event.EventBus;
+import dev.px.core.math.Box;
 import dev.px.core.event.Stage;
 import dev.px.core.event.Subscribe;
 import dev.px.core.event.impl.TickEvent;
 import dev.px.core.event.impl.WorldEvent;
 import dev.px.core.util.Validate;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -23,6 +26,13 @@ import java.util.Map;
  *       the highest explosion damage a target takes in a tick. So once one
  *       explosive is set off this tick, another only helps against a target if it
  *       hits that target harder &mdash; whatever kind it is.
+ * </ul>
+ *
+ * <ul>
+ *   <li><b>Pending placements.</b> Something you placed that the server has not
+ *       shown yet still takes up room: a search sharing this log will not place
+ *       where it would collide, until it shows up or its wait runs out. When it
+ *       does show up, it is remembered as {@linkplain #isOwn yours}.
  * </ul>
  *
  * <p>That second rule is about explosions, not crystals: a crystal aura and a bed
@@ -46,6 +56,10 @@ public final class AttackLog {
     /** The tick each inhibited explosive becomes free again. */
     private final Map<Object, Long> freeAt = new HashMap<>();
     private final Map<Object, Double> dealt = new HashMap<>();
+    /** Placed, not yet shown: the room each takes up, and the tick its wait runs out. */
+    private final List<Pending> pending = new ArrayList<>();
+    /** Explosives that showed up where you placed them, and the tick they are forgotten. */
+    private final Map<Object, Long> own = new HashMap<>();
     private final Listener listener = new Listener();
     private EventBus bus;
     private long tick;
@@ -75,6 +89,65 @@ public final class AttackLog {
                 times.remove();
             }
         }
+        pending.removeIf(placement -> placement.until <= tick);
+        own.values().removeIf(until -> until <= tick);
+    }
+
+    /**
+     * Records that something taking up {@code room} was placed, and waits
+     * {@code ticks} for it to show up. Nothing is recorded for a wait of 0.
+     */
+    public void placed(Box room, int ticks) {
+        Validate.notNull(room, "room");
+        if (ticks > 0) {
+            pending.add(new Pending(room, tick + ticks));
+        }
+    }
+
+    /** @return whether something placed and not yet shown takes up any of {@code region} */
+    public boolean isPendingIn(Box region) {
+        for (Pending placement : pending) {
+            if (placement.room.intersects(region)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return how many placements are waiting to show up */
+    public int getPendingCount() {
+        return pending.size();
+    }
+
+    /**
+     * An explosive taking up {@code room} has shown up: if it is where one of
+     * yours was placed, that placement is done waiting and {@code explosive} is
+     * remembered as yours for {@code ticks}.
+     *
+     * @return whether it is yours
+     */
+    public boolean arrived(Object explosive, Box room, int ticks) {
+        Validate.notNull(explosive, "explosive");
+        Validate.notNull(room, "room");
+        if (own.containsKey(explosive)) {
+            return true;
+        }
+        Iterator<Pending> waiting = pending.iterator();
+        while (waiting.hasNext()) {
+            Pending placement = waiting.next();
+            // Where it was meant to be: the same room, give or take where the server rounded it to.
+            if (placement.room.getCenter().distanceTo(room.getCenter()) <= ARRIVAL_SLACK) {
+                waiting.remove();
+                own.put(explosive, tick + Math.max(1, ticks));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return whether {@code explosive} showed up where you placed one */
+    public boolean isOwn(Object explosive) {
+        return own.containsKey(explosive);
     }
 
     /** Records that {@code explosive} was set off this tick, and leaves it alone for {@code inhibitTicks}. */
@@ -113,6 +186,8 @@ public final class AttackLog {
     public void clear() {
         freeAt.clear();
         dealt.clear();
+        pending.clear();
+        own.clear();
     }
 
     /** Stops listening to the bus given to {@link #ticking}; nothing otherwise. */
@@ -120,6 +195,19 @@ public final class AttackLog {
         if (bus != null) {
             bus.unsubscribe(listener);
             bus = null;
+        }
+    }
+
+    /** How far, in blocks, an explosive may show up from where it was placed and still be the one placed. */
+    private static final double ARRIVAL_SLACK = 0.5d;
+
+    private static final class Pending {
+        final Box room;
+        final long until;
+
+        Pending(Box room, long until) {
+            this.room = room;
+            this.until = until;
         }
     }
 

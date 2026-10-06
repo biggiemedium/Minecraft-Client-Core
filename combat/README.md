@@ -10,13 +10,14 @@ code**. Explosion formulas, armour maths, which blocks hold a crystal, how much
 clear space one needs: all of it is supplied by your client, as small rules that
 each answer one question. When Mojang changes how explosions or crystals work,
 you swap the one rule that changed. Nothing in this module needs a rewrite, and
-the [damage monitor](#6-the-damage-monitor) and [test vectors](#7-test-vectors)
+the [damage monitor](#8-the-damage-monitor) and [test vectors](#9-test-vectors)
 tell you which rule it was.
 
 **Status.** The rules layer, the search — where to place, what to break, the
-best few places, every threshold and timing rule, protecting friends and your
-own filters — for crystals and beds, the damage monitor and test vectors are
-done. See
+best few places, every threshold and timing rule, protecting friends, your own
+filters, ranking by what turning costs you, looking ahead, placing then breaking, and strict placement — for
+crystals and beds, finding holes and predicting who gets into one, planning block placements, the damage
+monitor and test vectors are done. See
 [Not yet included](#not-yet-included) for what comes next.
 
 **Requires:** Core, Java 8, Gson (ships with Minecraft). Inside this repository:
@@ -31,460 +32,20 @@ Without Gradle, copy `combat/src/main/java/dev/px/combat` alongside Core's sourc
 
 ---
 
-## A full crystal aura
-
-A complete crystal aura on Core and Combat, ready to copy into a client. It is
-kept up to date as the library grows, so it always shows the current way to
-build one. The numbered sections below explain every piece in it.
-
-Three files and a few lines of wiring:
-
-| File | What it is | Changes when |
-|---|---|---|
-| `CombatSetup.java` | everything that knows the game: trackers, blocks, health, the explosion profile | the game version changes |
-| `CrystalAura.java` | the module: settings, and acting on what the search finds | you change how your aura behaves |
-| `CrystalSpawnEvent.java` | the one event Core does not have | never |
-
-Every Core and Combat call is the real API, and the files compile as they are.
-Minecraft types use 1.21 Yarn names; other game calls go through `Game.…`, your
-own small wrappers, because the right method names depend on your version and
-mappings.
-
-### `CombatSetup.java`
-
-```java
-package your.client.combat;
-
-import dev.px.combat.crystal.CrystalBody;
-import dev.px.combat.crystal.CrystalRules;
-import dev.px.combat.crystal.Placement;
-import dev.px.combat.explosion.ExplosionModel;
-import dev.px.combat.explosion.Explosive;
-import dev.px.combat.explosion.rule.Exposure;
-import dev.px.combat.explosion.rule.Falloff;
-import dev.px.combat.explosion.rule.Mitigation;
-import dev.px.combat.explosion.rule.SampleGrid;
-import dev.px.combat.explosion.state.StateCapture;
-import dev.px.combat.explosion.state.StateMitigation;
-import dev.px.combat.explosion.state.TargetState;
-import dev.px.combat.monitor.Vitals;
-import dev.px.combat.world.BlockShape;
-import dev.px.combat.world.BlockView;
-import dev.px.combat.world.Obstructions;
-import dev.px.core.Core;
-import dev.px.core.entity.EntityTracker;
-import dev.px.core.entity.Tracked;
-import dev.px.core.target.TargetSelector;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.decoration.EndCrystalEntity;
-import net.minecraft.entity.player.PlayerEntity;
-
-import java.util.HashMap;
-import java.util.Map;
-
-/**
- * Combat for one game version: what the aura targets, the blocks it sees, how
- * much health things have, and how explosions hurt. When Mojang changes how
- * crystals or explosions work, this is the file you edit.
- */
-public final class CombatSetup {
-
-    /** Everything living the aura might hit. */
-    public static final class LivingTracker extends EntityTracker<LivingEntity> {
-        public LivingTracker() { super(LivingEntity.class); }
-
-        @Override protected boolean accepts(LivingEntity entity) { return entity.isAlive(); }
-    }
-
-    /** End crystals already in the world. */
-    public static final class CrystalTracker extends EntityTracker<EndCrystalEntity> {
-        public CrystalTracker() { super(EndCrystalEntity.class); }
-    }
-
-    /** The blocks: their shapes for explosion rays, which hold a crystal, which are clear. */
-    public static final class GameBlocks implements BlockView {
-        private final Map<Object, BlockShape> shapes = new HashMap<>();
-
-        @Override public BlockShape shapeAt(int x, int y, int z) {
-            return shapes.computeIfAbsent(Game.blockStateAt(x, y, z), Game::collisionShapeOf);   // once per state
-        }
-
-        public boolean isBase(int x, int y, int z)  { return Game.isObsidianOrBedrock(x, y, z); }
-        public boolean isClear(int x, int y, int z) { return Game.isAirOrReplaceable(x, y, z); }
-    }
-
-    public final LivingTracker living = new LivingTracker();
-    public final CrystalTracker crystals = new CrystalTracker();
-    public final GameBlocks blocks = new GameBlocks();
-    public final Vitals<LivingEntity> vitals;
-    public final StateCapture<LivingEntity> capture;
-    public final ExplosionModel<LivingEntity> explosions;
-    public final CrystalRules<LivingEntity> rules;
-    public final TargetSelector<LivingEntity> enemies;
-    public final TargetSelector<LivingEntity> friends;
-
-    public CombatSetup() {
-        vitals = new Vitals<LivingEntity>() {
-            @Override public double pool(LivingEntity e)            { return e.getHealth() + e.getAbsorptionAmount(); }
-            @Override public boolean isTrusted(LivingEntity e)      { return e == Game.player() || Game.serverShowsHealth(); }
-            @Override public boolean isRecentlyHurt(LivingEntity e) { return e.hurtTime > 0; }
-        };
-
-        // What the armour maths reads, captured off the entity, so test vectors can replay it.
-        capture = e -> TargetState.builder()
-                .put("armor", Game.armor(e))
-                .put("toughness", Game.armorToughness(e))
-                .put("protection", Game.blastProtectionPoints(e))
-                .put("difficulty", Game.difficultyName())
-                .build();
-
-        explosions = ExplosionModel.<LivingEntity>builder()
-                .measureFrom(Tracked::getPosition)                      // the wiki: to the feet
-                .exposure(Exposure.sampled(Profile.GRID))
-                .falloff(Profile.FALLOFF)
-                .mitigation(Mitigation.fromState(capture, Profile.DIFFICULTY, Profile.ARMOUR, Profile.PROTECTION))
-                .build();
-
-        rules = CrystalRules.<LivingEntity>builder()
-                .placement(Placement.clearance(blocks::isBase, 2, blocks::isClear, 2.0))   // 1 or 2: check your version
-                .body(CrystalBody.at(0.5, 1, 0.5).size(2, 2).explodingAt(0, 0, 0))
-                .explosive(Explosive.of("end crystal", 6))
-                .model(explosions)
-                .blocks(blocks)
-                .obstructions(Obstructions.of(Core.entities(), living, crystals))
-                .build();
-
-        // Who counts as an enemy: players in range who are not friends.
-        enemies = TargetSelector.from(LivingTracker.class)
-                .range(12)
-                .where(e -> e instanceof PlayerEntity && !Core.social().isFriend(Game.nameOf(e)))
-                .build();
-
-        // Who must not be hurt: friends anywhere an explosion could reach (place range + 2 · power).
-        friends = TargetSelector.from(LivingTracker.class)
-                .range(18)
-                .where(e -> e instanceof PlayerEntity && Core.social().isFriend(Game.nameOf(e)))
-                .build();
-    }
-
-    /** This version's explosion rules, written from the Minecraft wiki. Check them with the monitor and test vectors. */
-    public static final class Profile {
-
-        /** impact = (1 − distance / 2·power) · exposure; damage = 7 · power · (impact² + impact) + 1. */
-        public static final Falloff FALLOFF = Falloff.of(
-                power -> 2 * power,
-                (distance, exposure, power) -> {
-                    double impact = (1 - distance / (2 * power)) * exposure;
-                    return 7 * power * (impact * impact + impact) + 1;
-                });
-
-        /** Where rays are aimed in the target's box, per the wiki's description of the grid. */
-        public static final SampleGrid GRID = (box, sink) -> {
-            double w = box.getWidth(), h = box.getHeight(), d = box.getDepth();
-            double sx = 1 / (w * 2 + 1), sy = 1 / (h * 2 + 1), sz = 1 / (d * 2 + 1);
-            double ox = (1 - Math.floor(1 / sx) * sx) / 2;
-            double oz = (1 - Math.floor(1 / sz) * sz) / 2;
-            for (double fx = 0; fx <= 1; fx += sx) {
-                for (double fy = 0; fy <= 1; fy += sy) {
-                    for (double fz = 0; fz <= 1; fz += sz) {
-                        sink.point(box.getMin().getX() + fx * w + ox,
-                                   box.getMin().getY() + fy * h,
-                                   box.getMin().getZ() + fz * d + oz);
-                    }
-                }
-            }
-        };
-
-        public static final StateMitigation DIFFICULTY = (damage, state) -> {
-            switch (state.text("difficulty")) {
-                case "peaceful": return 0;
-                case "easy":     return Math.min(damage / 2 + 1, damage);
-                case "hard":     return damage * 1.5;
-                default:         return damage;
-            }
-        };
-
-        public static final StateMitigation ARMOUR =
-                (damage, state) -> Game.damageAfterArmour(damage, state.get("armor"), state.get("toughness"));
-
-        public static final StateMitigation PROTECTION =
-                (damage, state) -> Game.damageAfterProtection(damage, state.get("protection"));
-
-        private Profile() {
-        }
-    }
-}
-```
-
-### `CrystalAura.java`
-
-```java
-package your.client.combat;
-
-import dev.px.combat.search.CrystalSearch;
-import dev.px.combat.search.option.BreakOption;
-import dev.px.combat.search.option.PlaceOption;
-import dev.px.combat.search.rule.Reach;
-import dev.px.combat.search.rule.ReachPoint;
-import dev.px.combat.search.rule.Thresholds;
-import dev.px.core.Core;
-import dev.px.core.event.Priority;
-import dev.px.core.event.Stage;
-import dev.px.core.event.Subscribe;
-import dev.px.core.event.impl.KeyEvent;
-import dev.px.core.event.impl.Render3DEvent;
-import dev.px.core.event.impl.TickEvent;
-import dev.px.core.math.Box;
-import dev.px.core.math.Vec3;
-import dev.px.core.module.Module;
-import dev.px.core.module.ModuleInfo;
-import dev.px.core.movement.rotation.RotationPriority;
-import dev.px.core.render.Color;
-import dev.px.core.render.Render;
-import dev.px.core.setting.impl.BindSetting;
-import dev.px.core.setting.impl.BooleanSetting;
-import dev.px.core.setting.impl.ColorSetting;
-import dev.px.core.setting.impl.NumberSetting;
-import net.minecraft.entity.LivingEntity;
-
-@ModuleInfo(name = "Crystal Aura", description = "Places and breaks end crystals", category = "Combat")
-public final class CrystalAura extends Module {
-
-    // ---- what to do
-    private final BooleanSetting place    = bool("Place", true);
-    private final BooleanSetting breaking = bool("Break", true);
-    private final BooleanSetting instant  = bool("Instant", true).describe("Break crystals the moment they spawn");
-
-    // ---- reach
-    private final NumberSetting<Double> placeRange = decimal("Place Range", 4.5, 1, 6);
-    private final NumberSetting<Double> placeWall  = decimal("Place Wall Range", 3.5, 0, 6);
-    private final NumberSetting<Double> breakRange = decimal("Break Range", 4.5, 1, 6);
-    private final NumberSetting<Double> breakWall  = decimal("Break Wall Range", 3.5, 0, 6);
-
-    // ---- damage
-    private final NumberSetting<Double> minDamage   = decimal("Min Damage", 6, 0, 36);
-    private final NumberSetting<Double> maxSelf     = decimal("Max Self Damage", 10, 0, 36);
-    private final BooleanSetting        antiSuicide = bool("Anti Suicide", true);
-    private final BooleanSetting        lethal      = bool("Lethal", true);
-    private final NumberSetting<Double> lethalMult  = decimal("Lethal Multiplier", 1.5, 1, 4).visibleWhen(lethal);
-    private final BooleanSetting        ignoreSelf  = bool("Lethal Ignores Max Self", true).visibleWhen(lethal);
-
-    // ---- faceplace and armour breaking
-    private final NumberSetting<Double> faceHealth = decimal("Faceplace Health", 8, 0, 36);
-    private final NumberSetting<Double> faceDamage = decimal("Faceplace Damage", 2, 0, 10);
-    private final BindSetting           faceKey    = bind("Faceplace Key");
-    private final NumberSetting<Double> armourWorn = decimal("Armour Break %", 15, 0, 100);
-
-    // ---- friends
-    private final NumberSetting<Double> friendMax = decimal("Friend Max Damage", 6, 0, 36);
-    private final BooleanSetting        antiPop   = bool("Friend Anti Pop", true).describe("Never leave a friend near death");
-
-    // ---- timing
-    private final NumberSetting<Integer> ticksExisted = integer("Ticks Existed", 0, 0, 10);
-    private final NumberSetting<Integer> inhibit      = integer("Inhibit Ticks", 3, 0, 10);
-
-    // ---- rotations and rendering
-    private final BooleanSetting       rotate = bool("Rotate", true);
-    private final NumberSetting<Float> turn   = number("Rotation Speed", 180f, 10f, 180f).visibleWhen(rotate);
-    private final ColorSetting         colour = color("Colour", Color.rgb(0xADF773));
-
-    private final CrystalSearch<LivingEntity> search;
-
-    private boolean faceHeld;
-    private PlaceOption<LivingEntity> shown;          // the last placement, for rendering
-
-    public CrystalAura(CombatSetup combat) {
-        Thresholds<LivingEntity> thresholds = Thresholds.<LivingEntity>builder()
-                .minDamage(minDamage::getDouble)
-                .maxSelfDamage(maxSelf::getDouble)
-                // a margin of -∞ switches anti-suicide off; a multiplier of 0 switches lethal off
-                .antiSuicide(() -> antiSuicide.isOn() ? 0.5 : Double.NEGATIVE_INFINITY)
-                .lethal(() -> lethal.isOn() ? lethalMult.getDouble() : 0, ignoreSelf::isOn)
-                .facePlace(faceHealth::getDouble, faceDamage::getDouble)
-                .facePlaceWhen(() -> faceHeld)
-                .armourBreak(Game::mostWornArmourPercent, armourWorn::getDouble, faceDamage::getDouble)
-                .maxProtectedDamage(friendMax::getDouble)
-                .protectedMargin(() -> antiPop.isOn() ? 2 : Double.NEGATIVE_INFINITY)
-                .breakMinAge(ticksExisted::getInt)
-                .inhibit(inhibit::getInt)
-                .build();
-
-        this.search = CrystalSearch.<LivingEntity>builder()
-                .rules(combat.rules)
-                .entities(Core.entities())
-                .targets(Core.targets(), combat.enemies)
-                .protect(combat.friends)                // never targeted, and the friend limits above apply
-                .crystals(combat.crystals)
-                .vitals(combat.vitals)
-                .placeReach(Reach.of(placeRange::getDouble, placeWall::getDouble))
-                .breakReach(Reach.of(breakRange::getDouble, breakWall::getDouble).measuredTo(ReachPoint.NEAREST))
-                .thresholds(thresholds)
-                .bus(Core.bus())                      // ticks the search ahead of this module
-                .build();
-    }
-
-    @Subscribe(stage = Stage.PRE, priority = Priority.HIGH)
-    private void onTick(TickEvent event) {
-        if (breaking.isOn()) {
-            BreakOption<LivingEntity> hit = search.findBreak();
-            if (hit != null) {
-                aimAt(hit.getCrystal().getCenter());
-                Game.attack(hit.getCrystal().get());          // your version's attack packet and swing
-                search.attacked(hit.getCrystal());            // inhibit it; only the strongest lands this tick
-            }
-        }
-        shown = null;
-        if (place.isOn()) {
-            PlaceOption<LivingEntity> spot = search.findPlace();
-            if (spot != null) {
-                aimAt(spot.getOrigin());
-                Game.placeCrystalOn(spot.getX(), spot.getY(), spot.getZ());   // swap, click the base, swap back
-                shown = spot;
-            }
-        }
-    }
-
-    /** Your adapter posts this when the game adds a crystal: break it before the next tick. */
-    @Subscribe
-    private void onCrystalSpawn(CrystalSpawnEvent event) {
-        if (!instant.isOn() || !breaking.isOn()) {
-            return;
-        }
-        BreakOption<LivingEntity> now = search.spawned(event.getCrystal());
-        if (now != null) {
-            Game.attack(now.getCrystal().get());
-            search.attacked(now.getCrystal());
-        }
-    }
-
-    /** Faceplaces every target while the key is held. */
-    @Subscribe
-    private void onKey(KeyEvent event) {
-        if (faceKey.get().matches(event.getKey(), event.getModifiers())) {
-            faceHeld = event.isPressed();
-        }
-    }
-
-    @Subscribe
-    private void onRender(Render3DEvent event) {
-        if (shown != null) {
-            Render.boxOutline(Box.block(shown.getX(), shown.getY(), shown.getZ()), 1.5f, colour.resolve());
-        }
-    }
-
-    private void aimAt(Vec3 point) {
-        if (rotate.isOn()) {
-            Vec3 eye = Core.entities().getSelf().getEyePosition();
-            Core.rotations().request(this, eye.rotationTo(point), RotationPriority.HIGH, turn.getFloat());
-        }
-    }
-
-    @Override protected void onDisable() {
-        shown = null;
-        faceHeld = false;
-        Core.rotations().release(this);
-    }
-
-    /** Shown after the name in the module list: the damage of the last placement, and why. */
-    @Override public String getDisplayInfo() {
-        return shown == null ? "" : String.format("%.1f %s", shown.getDamage(), shown.getTrigger());
-    }
-}
-```
-
-### `CrystalSpawnEvent.java`
-
-```java
-package your.client.combat;
-
-import dev.px.core.event.Event;
-
-/** Posted by your adapter when the game adds an end crystal: Core has no event for entities appearing. */
-public final class CrystalSpawnEvent extends Event {
-
-    private final Object crystal;
-
-    public CrystalSpawnEvent(Object crystal) {
-        this.crystal = crystal;
-    }
-
-    public Object getCrystal() {
-        return crystal;
-    }
-}
-```
-
-### Wiring it in
-
-In your bootstrap, register the trackers before the module that uses them:
-
-```java
-Core core = Core.builder("LeapFrog", "2.0").platform(new MyPlatform()).build();
-
-CombatSetup combat = new CombatSetup();
-core.getEntityService().registerAll(combat.living, combat.crystals);
-core.getModuleRegistry().registerAll(new CrystalAura(combat));
-
-core.start();
-Core.entities().setSource(new MyEntitySource());     // your EntitySource (Core §12)
-```
-
-In your mixins, where the game adds an entity to the world, on the game thread:
-
-```java
-if (entity instanceof EndCrystalEntity) {
-    Core.bus().post(new CrystalSpawnEvent(entity));
-}
-```
-
-Optionally, check the profile against the real game while you play and record
-test vectors to replay later ([§6](#6-the-damage-monitor), [§7](#7-test-vectors)):
-
-```java
-VectorRecorder<LivingEntity> recorder = VectorRecorder.<LivingEntity>builder()
-        .state(combat.capture)
-        .blocks(combat.blocks)
-        .build();
-
-DamageMonitor<LivingEntity> monitor = DamageMonitor.<LivingEntity>builder()
-        .model(combat.explosions)
-        .blocks(combat.blocks)
-        .vitals(combat.vitals)
-        .targets(Core.entities(), combat.living)
-        .recorder(recorder)
-        .bus(Core.bus())
-        .build();
-
-// where the explosion packet is handled, on the game thread:
-monitor.exploded(Vec3.of(packet.getX(), packet.getY(), packet.getZ()), combat.rules.getExplosive());
-```
-
-### What is whose
-
-| Yours, per client | Yours, per game version | The library's |
-|---|---|---|
-| the settings and their defaults | `CombatSetup` and its `Profile` | the scan, the bounds, branch and bound |
-| how you rotate, swap and swing | the `Game.…` wrappers | every threshold and trigger, and protecting friends |
-| what you render and log | which blocks are bases, the clearance number | inhibit, minimum age, spawn breaks |
-| when to place and break, and in which order | the explosion and armour formulas | the one-explosion-per-tick rule |
-| who your friends are, and any filter of your own | | the best few places, ranked |
-
----
-
 ## Contents
-
-- [A full crystal aura](#a-full-crystal-aura)
 
 1. [Your world](#1-your-world)
 2. [Explosions](#2-explosions)
 3. [Crystals](#3-crystals)
 4. [Searching](#4-searching)
 5. [Beds](#5-beds)
-6. [The damage monitor](#6-the-damage-monitor)
-7. [Test vectors](#7-test-vectors)
-8. [When Mojang changes something](#8-when-mojang-changes-something)
-9. [Package map](#9-package-map)
-10. [Verifying](#10-verifying)
+6. [Holes](#6-holes)
+7. [Placing blocks](#7-placing-blocks)
+8. [The damage monitor](#8-the-damage-monitor)
+9. [Test vectors](#9-test-vectors)
+10. [When Mojang changes something](#10-when-mojang-changes-something)
+11. [Package map](#11-package-map)
+12. [Verifying](#12-verifying)
 
 ---
 
@@ -592,8 +153,8 @@ all.
 
 Here is a profile written from the [Minecraft wiki](https://minecraft.wiki/w/Explosion)'s
 description of current Java. **These numbers are your client's, not the
-library's** — check them against your version with the [monitor](#6-the-damage-monitor)
-and [test vectors](#7-test-vectors).
+library's** — check them against your version with the [monitor](#8-the-damage-monitor)
+and [test vectors](#9-test-vectors).
 
 The wiki gives distance as measured to the target's **feet**, and:
 
@@ -778,8 +339,9 @@ BreakOption<LivingEntity> now = search.spawned(crystalEntity);
 ```
 
 Each option says what to do and why: the target, the damage to them and to you,
-its score, and its `Trigger` — `MINIMUM`, `FACEPLACE`, `ARMOUR_BREAK` or `LETHAL`.
-Draw the damage, log the reason, or skip a faceplace you do not want right now.
+its score, its `Trigger` — `MINIMUM`, `FACEPLACE`, `ARMOUR_BREAK` or `LETHAL` —
+and `getAim()`, the point to look at to act on it. Draw the damage, log the
+reason, or skip a faceplace you do not want right now.
 
 ### The best few
 
@@ -791,17 +353,157 @@ crystal; planning several placements a tick is [not written yet](#not-yet-includ
 
 ```java
 for (PlaceOption<LivingEntity> option : search.findPlaces(3)) {
-    if (canRotateTo(option)) {
+    if (canRotateTo(option.getAim())) {
         place(option.getX(), option.getY(), option.getZ());
         break;
     }
 }
 ```
 
+When reaching is about turning, an [aim cost](#aiming) is usually better: the
+search then ranks by it, rather than you skipping down the list.
+
+### Aiming
+
+Every option says where you would look to act on it — `getAim()`: the centre of
+a base's top face, a crystal's centre, the cell a bed's foot goes in, the half
+of a bed to click. Your rotation manager turns there; the search never turns
+you, and never asks which rotation manager you use.
+
+What it does ask, if you let it, is what turning there is worth. An `AimCost`
+takes your eyes and the aim point and answers in **damage**, and options rank by
+their score less that cost:
+
+```java
+// each degree from where you look now gives up 0.05 damage; past 90 degrees, never
+AimCost turning = AimCost.angle(myRotations::getServerRotation, () -> 0.05, () -> 90);
+
+// or anything your rotations know: ticks to get there at your turn speed, say
+AimCost ticks = (eye, at) -> {
+    int needed = myRotations.ticksToReach(eye.rotationTo(at));
+    return needed > 1 ? Double.POSITIVE_INFINITY : needed * 4;   // one tick of turning is worth 4 damage
+};
+
+CrystalSearch.<LivingEntity>builder()
+        ...
+        .placeAimCost(turning)
+        .breakAimCost(AimCost.NONE)        // your server does not check where you look to attack
+        .build();
+```
+
+- **A trade.** A cost of 3 means a spot you are already looking at ranks the
+  same as one 3 damage stronger you would have to turn to. Make it large and the
+  quickest turn always wins, damage only breaking ties.
+- **A limit.** Infinity — or NaN — means you cannot turn there in time. The spot
+  or crystal is dropped before any damage is raycast, and counted in
+  `SearchStats.getUnaimable()`.
+- **A bonus.** A cost may be negative: favour the spot you are already turning
+  toward, so the aura does not flip between two nearly equal ones every tick.
+
+`getScore()` stays what your `Score` said; `getAimCost()` is the cost, and
+`getRank()` — the score less the cost — is what the options were ranked by.
+Filters see all three. Placing and breaking take separate costs (`useAimCost`
+for beds), both `AimCost.NONE` unless set.
+
+The cost is worked out once per spot, from geometry alone, and the search lowers
+each spot's bound by it before ordering them, so branch and bound stays exact
+whatever you return. The suite checks that against a brute-force search in 40
+random layouts with turning costs, limits and bonuses.
+
+A bed's facing comes from your yaw as you place it, which the aim point does not
+capture: narrow `facings` to the way you face if your cost must account for it.
+
 `findPlace()` is `findPlaces(1)`. Branch and bound still applies: it stops once
 nothing left could beat the `n`th best, so asking for more costs more estimates.
 The test suite checks the best four against every option, in 20 random layouts.
 `BedSearch.findPlaces(n)` does the same for beds.
+
+### Looking ahead
+
+An explosion lands a few ticks after you decide on it: your ping, and for a
+crystal the wait to break it. By then the target has moved. Tell the search how
+long, and where they will be, and it scores damage there:
+
+```java
+CrystalSearch.<LivingEntity>builder()
+        ...
+        .lookahead(Lookahead.predicted(Core.prediction()))       // where they will be
+        .placeDelay(() -> pingTicks() + breakDelay.getInt())      // until a crystal placed now goes off
+        .useDelay(() -> pingTicks())                              // until one broken now goes off
+        .build();
+```
+
+`Lookahead` is a one-method interface, and the search never knows how it is
+answered: `Lookahead.none()` (the default — where they are now),
+`Lookahead.extrapolated()` (a straight line), `Lookahead.predicted(...)` over
+Core's prediction (its likeliest future, and where they are now while it is not
+reliable), or your own. It is asked once per entity per search — targets, you, and
+everyone you protect, so a friend walking into the blast is spared — and never
+while the delay is 0. Options still name the real entity; only the damage is
+measured at the stand-in, a `Tracked.projected(position)`.
+
+### Placing, then breaking
+
+A crystal you placed exists on the server a few ticks before your client sees it.
+Say you placed it, and searches sharing the log keep out of its way until it shows
+up or its wait (`pendingTicks`, half a second unless set) runs out:
+
+```java
+PlaceOption<LivingEntity> spot = search.findPlace();
+place(spot);
+search.placed(spot);                         // the next search will not collide with it
+
+for (PlaceOption<LivingEntity> each : search.planPlaces(2)) {   // several a tick, none in another's way
+    place(each);
+    search.placed(each);
+}
+
+BreakOption<LivingEntity> hit = search.findBreak();
+if (hit != null && hit.isOwn()) { ... }      // it showed up where you placed one: yours
+```
+
+`planPlaces(n)` differs from `findPlaces(n)`: the best few are alternatives, two of
+which may stand in each other's way; a plan is a set to place together, each the
+best that does not collide with those before it. A crystal that shows up where you
+placed one — in the world or from its spawn packet — is yours (`isOwn()`), so an
+aura can break its own first, or only its own.
+
+### Watching the search
+
+A `SearchListener` hears every exact damage estimate a search makes, and its
+verdict — passed, too weak, suicidal, endangering a friend, over the self cap,
+outranked or filtered:
+
+```java
+.listener(judged -> seen.merge(judged.getSubject(), judged.getDamage(), Math::max))   // draw these
+```
+
+For drawing the damage a search saw, and for seeing why it chose nothing. It hears
+only what was estimated: turn `pruning` off while you look to see every spot.
+
+### Strict placement
+
+Give a search your `Clicks`, and only spots your server would take are offered,
+each with the click that places it:
+
+```java
+CrystalSearch.<LivingEntity>builder()
+        ...
+        .clicks(clicks)
+        .build();
+
+PlaceOption<LivingEntity> spot = search.findPlace();
+turnTo(spot.getClick().getRotation(eye));                        // getAim() is its hit point
+Game.interact(spot.getClick());
+```
+
+A crystal goes on top of its base whichever face is clicked, so any face your
+rules accept will do; a base above your eyes is still offered by a server that
+takes the faces you can see, and refused by one that insists on the top. For a
+bed, the click goes into the foot's cell, and must face the bed the right way
+when looked along, since the game takes a bed's facing from your yaw. Using a bed
+clicks the half reached. Spots with no click your rules accept are counted in
+`SearchStats.getUnclickable()`.
 
 ### Protecting friends
 
@@ -888,13 +590,15 @@ to trade damage for safety, or your own. Ties go to the one that hurts you least
 
 1. **Scan** every cell in a cube around your eyes that reaches the place range,
    cheapest test first: distance, then `CrystalRules.canPlace`, then — past the
-   wall range — one ray for visibility.
+   wall range — one ray for visibility, then your aim cost: a spot you cannot
+   turn to is dropped here.
 2. **Bound** each candidate against each target: the damage it would do with
    nothing in the way. That costs no raycasting at all. A candidate whose bound
    cannot meet any target's threshold is dropped there.
 3. **Branch and bound.** Candidates are tried best bound first with exact,
-   raycast estimates. Once the best option found scores higher than the next
-   bound, nothing left can win, and the search stops.
+   raycast estimates, each bound lowered by the spot's aim cost. Once the best
+   option found ranks higher than the next bound, nothing left can win, and the
+   search stops.
 
 With R the place range, T the targets, S the sample points an `Exposure` casts
 from, L the cells a ray crosses (about √3 × its length), B the bases that pass
@@ -903,7 +607,7 @@ break range:
 
 | Step | Cost |
 |---|---|
-| scan | (2⌈R⌉ + 1)³ cells: distance and `canPlace` each, one ray each past the wall range |
+| scan | (2⌈R⌉ + 1)³ cells: distance and `canPlace` each, one ray each past the wall range, one aim cost per base seen |
 | bound | O(B · T), no rays |
 | order | O(V log V), one sort |
 | exact estimates, worst case | O(V · (T + 1) · S · L) |
@@ -918,15 +622,16 @@ which is why the bound matters more than anything else here. In the test arena,
 67 viable placements are settled with 4 exact estimates.
 
 Pruning assumes damage never falls as exposure rises, and that a score is never
-more than the damage to the target. Both hold for everything shipped here; turn
+more than the damage to the target. An aim cost needs neither: it is exact.
+Both hold for everything shipped here; turn
 pruning off with `.pruning(false)` for a model or score that breaks either.
 Protection then raycasts every friend instead of trusting the bound. The
 test suite checks branch and bound against a brute-force search in 30 random
 layouts.
 
 `getLastPlaceStats()` and `getLastBreakStats()` say what the last search did —
-cells scanned, bases found, candidates pruned, estimates paid for, spots refused
-for friends or by your filters — for profiling, and for seeing why nothing was
+cells scanned, bases found, spots you could not turn to, candidates pruned,
+estimates paid for, spots refused for friends or by your filters — for profiling, and for seeing why nothing was
 found.
 
 ### What it reuses from Core
@@ -1096,7 +801,137 @@ brute-force search in 20 random layouts with beds too.
 
 ---
 
-## 6. The damage monitor
+## 6. Holes
+
+A hole is open cells walled in by blocks an explosion cannot break. Which blocks
+those are is your game's to say; the shapes are the library's. `HoleWatch` then
+answers what an auto-fill, a surround breaker or a hole-aware aura asks: which
+holes might this player get into, and when?
+
+```java
+HoleRules holes = HoleRules.builder()
+        .walls((x, y, z) -> Game.isObsidianOrBedrock(x, y, z))
+        .open((x, y, z) -> Game.isAirOrReplaceable(x, y, z))
+        .headroom(2)                                             // cells a player needs to stand in
+        .safe((x, y, z) -> Game.isBedrock(x, y, z))              // bedrock all round: nothing breaks it
+        .build();
+
+HoleWatch watch = HoleWatch.builder()
+        .finder(new HoleFinder(holes))
+        .prediction(Core.prediction())
+        .obstructions(Obstructions.of(Core.entities(), players)) // someone else in it fills it
+        .horizon(() -> pingTicks() + placeDelay.getInt())        // how far ahead your fill lands
+        .radius(range::getDouble)
+        .build();
+
+for (HoleEntry entry : watch.watch(enemy)) {
+    if (!entry.isInside() && !entry.isOccupied()
+            && entry.getChance() > minChance.getDouble()           // likely to go in...
+            && entry.getEarliestPossible() > myFillTicks()) {      // ...and cannot possibly beat the fill
+        fill(entry.getHole());
+    }
+}
+```
+
+`HoleFinder` finds singles, doubles along either axis and quads: open cells, each
+with a floor and headroom, walled on every side that is not one of its own cells.
+Only the cells at the player's feet are walled; corners do not matter. A hole is
+safe when every wall and floor block passes your safe test.
+
+Each `HoleEntry` gives both answers Core's prediction does:
+
+- **Likely** — `getChance()` and `getLikelyTick()`: the share of the player's
+  predicted futures that end up in the hole, and when more than half of them do.
+  One "heads for it" future per hole is weighed with the prediction's own, by how
+  well each explains the player's last few ticks: a hole they have been walking
+  toward carries weight, one they have been walking past does not.
+- **Possible** — `getEarliestPossible()`: the soonest they could be in it at all,
+  at the fastest of their rules and what they have been seen to do. A speed hacker
+  heading for a hole is predicted in sooner, and could possibly be in sooner, than
+  a legit player from the same spot.
+- **If they go for it** — `getArrivalTick()`: when they would be in, at their own
+  pace, whatever the chance.
+
+**Sprinting carries a player over a one-block hole.** Only a future that stops
+over it drops in, so until a sprinter slows down, running at a hole and running
+over it look the same and the chance is split between them. `getArrivalTick()`
+still gives the timing, and `HoleWatch.Builder.prior` leans toward holes when you
+believe players running at one usually mean it.
+
+Keep the horizon at least three ticks under your trackers' history: futures are
+weighed by playing them from that far back. Friends work the same way — watch
+them too, and never fill a hole a friend is likely to reach.
+
+---
+
+## 7. Placing blocks
+
+Surround, auto-fill, self-trap, scaffold, burrow: every one of them places
+blocks, and the hard part is the same in all of them — which block to click,
+which face, where on it, in what order, and whether the server will take it.
+
+### How your server takes a click
+
+```java
+Clicks clicks = Clicks.builder()
+        .support((x, y, z) -> Game.isSolid(x, y, z) && !Game.opensWhenClicked(x, y, z))
+        .replaceable((x, y, z) -> Game.isAirOrReplaceable(x, y, z))
+        .faces(FaceRule.facingEye()                              // "strict direction"
+                .and(FaceRule.exposed(Game::isFullBlock))
+                .and(FaceRule.reach(Reach.of(4.5, 3), blocks)))
+        .hit(HitPoint.CENTRE)
+        .build();
+
+Click click = clicks.best(eye, cell, looking);                  // into a cell: against a block beside it
+Click onBase = clicks.bestOn(eye, base);                        // on a block: what a crystal is placed by
+```
+
+A `Click` is the block to click, the face, and the hit point — in world
+coordinates for newer versions, `getRelativeHit()` within the block for older
+ones — and `getRotation(eye)`, what to turn to first.
+
+Vanilla accepts any face; anticheats are stricter, each in its own way, so
+`FaceRule` is built from the checks they make:
+
+| Rule | Accepts |
+|---|---|
+| `FaceRule.ANY` | everything: vanilla |
+| `FaceRule.facingEye()` | a face turned toward you: your eyes beyond the plane it lies in. Not the top of a block above your eyes, nor the far side of one |
+| `FaceRule.exposed(solid)` | a face not covered by the block beside it |
+| `FaceRule.visible(blocks)` | a hit point with a clear line from your eyes |
+| `FaceRule.reach(reach, blocks)` | within range, and past the wall range only with a clear line |
+
+Combine them with `and`, or write your own for a check none of these makes.
+`airPlace(...)` lets a cell with nothing beside it be clicked on itself, for
+servers that allow it.
+
+### Planning several a tick
+
+```java
+PlacementPlanner planner = PlacementPlanner.builder()
+        .clicks(clicks)
+        .obstructions(Obstructions.of(Core.entities(), players))   // nothing goes where someone stands
+        .perTick(blocksPerTick::getInt)
+        .supports(1)                                               // a block under one with nothing to click
+        .build();
+
+Plan plan = planner.plan(eye, surroundCells, looking);           // most important first
+for (Plan.Step step : plan.getSteps()) {
+    turnTo(step.getClick().getRotation(eye));
+    Game.interact(step.getClick());
+}
+```
+
+Cells are placed in the order given until the tick's limit. A block planned this
+tick counts as there for every cell after it, so a bridge builds out over a drop,
+each block clicked against the last. A cell with nothing to click gets supports
+beside it first — below tried first — up to `supports` deep. Cells already
+filled, with someone in them, unreachable, or past the limit are left out, each
+with its reason in `getSkipped()`.
+
+---
+
+## 8. The damage monitor
 
 The `DamageMonitor` checks your `ExplosionModel` against what explosions actually
 do in game, so a version change shows up as a warning — not as a crystal aura that
@@ -1177,7 +1012,7 @@ away — on purpose, since they would measure the recovery rule, not the explosi
 
 ---
 
-## 7. Test vectors
+## 9. Test vectors
 
 A **test vector** is one real explosion saved as a test case: the explosive and
 where it went off; the target's position, size and captured `TargetState`; a
@@ -1263,7 +1098,7 @@ before you ever play on it.
 
 ---
 
-## 8. When Mojang changes something
+## 10. When Mojang changes something
 
 | If your version changes… | Swap… |
 |---|---|
@@ -1284,7 +1119,7 @@ the profile matches the game.
 
 ---
 
-## 9. Package map
+## 11. Package map
 
 | Package | Classes | What it is |
 |---|---|---|
@@ -1301,15 +1136,17 @@ the profile matches the game.
 | `combat.vector.replay` | `VectorReplay`, `ReplayResult`, `VectorOutcome` | runs a profile against saved explosions |
 | `combat.search` | `CrystalSearch`, `BedSearch` | where to place, what to break or use |
 | `combat.search.engine` | `ExplosiveSearch`, `Device`, `PlaceDevice`, `UseDevice`, `Found`, `SearchStats` | the search every explosive shares, and what each search cost |
-| `combat.search.rule` | `Thresholds`, `Reach`, `ReachPoint`, `Score`, `OptionFilter` | your aura's settings: what is worth doing, how far, how it is ranked, and your own last word |
+| `combat.search.rule` | `Thresholds`, `Reach`, `ReachPoint`, `Score`, `AimCost`, `OptionFilter` | your aura's settings: what is worth doing, how far, how it is ranked, what turning is worth, and your own last word |
 | `combat.search.option` | `Option`, `PlaceOption`, `BreakOption`, `BedPlaceOption`, `BedUseOption`, `Trigger`, `Proposal`, `Harm` | what the search found and why, and what a filter is shown |
 | `combat.search.timing` | `AttackLog` | inhibit, and what has been dealt this tick, shareable across searches |
+| `combat.hole` | `HoleRules`, `HoleFinder`, `Hole`, `HoleShape`, `HoleWatch`, `HoleEntry` | what a hole is in your game, finding them, and who might get into one, likely and possible |
+| `combat.place` | `Clicks`, `Click`, `FaceRule`, `HitPoint`, `PlacementPlanner`, `Plan` | how your server takes a click, and placing several blocks a tick |
 
 ---
 
-## 10. Verifying
+## 12. Verifying
 
-`dev.px.combat.test.CombatSmokeTest` runs **248 checks** in a plain JVM — no
+`dev.px.combat.test.CombatSmokeTest` runs **374 checks** in a plain JVM — no
 Minecraft, no window. The "game" is a few plain classes and a block grid written
 by the tests, with its own version profile written the way a client would, and
 the checks prove the library does what any profile says.
@@ -1321,7 +1158,8 @@ core/build/classes/java/main:core/build/classes/java/testFixtures:<gson.jar> \
      dev.px.combat.test.CombatSmokeTest
 ```
 
-The suites share Core's test fixtures — `Checks`, `FakePlatform`, `RecordingLogger` —
+The suites share Core's test fixtures — `Checks`, `FakePlatform`, `RecordingLogger`,
+`GridCollisionSpace` and `MovementRig` —
 through `testFixtures(project(':core'))`.
 
 | Suite | Covers |
@@ -1329,17 +1167,21 @@ through `testFixtures(project(':core'))`.
 | `CrystalRulesTests` | block shapes and segment tests, including what counts as touching; rays through walls, over and through slabs, from inside a block; uniform grids; exposure in the open, behind a wall, partly covered; a model put together from its rules, with range culling, the formula's minimum, mitigation order and the measure point; placement by clearance, with one or two clear blocks and entities inside, touching and above; the crystal body; `CrystalRules` from a base and from an existing crystal, behind a wall, and builders naming what is missing |
 | `DamageMonitorTests` | a matching model trusted; a wrong formula, wrong armour and wrong exposure each noticed and blamed on the right rule; several explosions in one tick; a health update handled before the explosion; recovering, hidden, untrusted, leaving and out-of-range targets; pops as lower bounds and unexpected pops; one disturbed sample not swaying the verdict; ticking from the bus, closing and clearing |
 | `VectorTests` | target state; block snapshots at negative coordinates, palettes and rebuilding; recording from the monitor, with state, blocks and target, thrown-away samples, same-tick merging and capacity; JSON written and read back equal, other formats and newer versions refused; replaying the right profile from the saved file alone, and a wrong formula, wrong armour and wrong sampling each failing and blamed on the right rule; tolerance; popped vectors |
-| `SearchTests` | placing on a floor of bases with the scan's counts; branch and bound picking what a brute-force search picks in 30 random layouts while pruning most candidates; the best few places, ordered, on their own bases, and the best four matching every option in 20 layouts; place range, the nearest-point measure and wall range; minimum damage, the self-damage cap, anti-suicide; lethal, its multiplier and its self-cap override, never for hidden health; faceplacing by health and by keybind, armour breaking; protecting a friend by cap and by margin, never for hidden health, never as a target, before the cut to `maxTargets`, against kills and breaks, cleared by the bound without raycasting, and refusing exactly what raycasting every friend refuses in 20 layouts; filters refusing, seeing the option and exact damage to friends only when asked, in order, on breaks too, choosing the right one of two enemies, and branch and bound staying exact under one in 15 layouts; picking the crystal to break, break range, minimum age; inhibit and the one-explosion-per-tick rule across ticks; breaking on spawn; balanced scoring; missing parts, no targets, ticking from the bus |
-| `BedTests` | a bed's cells and equality by position; the best three beds, ranked; placement with room, walls, entities on either half, floating, and support under both halves; finding standing beds by their heads; the bed's own cells hiding its explosion, and predictions made with them empty; placing in the Nether, one spot per facing, narrowed facings, nothing in the Overworld; branch and bound against brute force in 20 layouts; using the nearer usable half, head-only versions, use range; inhibit by position; one explosion a tick, across a crystal search and a bed search sharing a log; the monitor and recorder told the bed is gone; builders naming what is missing |
+| `SearchTests` | placing on a floor of bases with the scan's counts; branch and bound picking what a brute-force search picks in 30 random layouts while pruning most candidates; the best few places, ordered, on their own bases, and the best four matching every option in 20 layouts; place range, the nearest-point measure and wall range; minimum damage, the self-damage cap, anti-suicide; lethal, its multiplier and its self-cap override, never for hidden health; faceplacing by health and by keybind, armour breaking; protecting a friend by cap and by margin, never for hidden health, never as a target, before the cut to `maxTargets`, against kills and breaks, cleared by the bound without raycasting, and refusing exactly what raycasting every friend refuses in 20 layouts; filters refusing, seeing the option and exact damage to friends only when asked, in order, on breaks too, choosing the right one of two enemies, and branch and bound staying exact under one in 15 layouts; picking the crystal to break, break range, minimum age; inhibit and the one-explosion-per-tick rule across ticks; breaking on spawn; balanced scoring; aiming — aim points, unaimable spots dropped before bounding, a turning cost traded against damage, bonuses, filters seeing the cost, separate place and break costs, spawn breaks, the angle cost, and the best one and best four matching every option in 40 layouts with costs, limits and bonuses; looking ahead — never asked without a delay, damage scored where the enemy will be against the real entity, your own damage and a friend walking into the blast looked ahead too, breaking by its own delay, Core's prediction as the lookahead, unreliable predictions left where they are; pending placements keeping the next off their room, expiring, shared through the log; a plan of places none in another's way; crystals that show up where you placed them yours, on break and on spawn; a listener hearing every estimate and each verdict; strict placement — a click on a face turned toward you, aimed at its hit, any face for a crystal unless your rules want the top, planned places with clicks; missing parts, no targets, ticking from the bus |
+| `BedTests` | a bed's cells and equality by position; the best three beds, ranked; placement with room, walls, entities on either half, floating, and support under both halves; finding standing beds by their heads; the bed's own cells hiding its explosion, and predictions made with them empty; placing in the Nether, one spot per facing, narrowed facings, nothing in the Overworld; branch and bound against brute force in 20 layouts; using the nearer usable half, head-only versions, use range; aiming at the foot's cell and at the half to click, and beds you cannot turn to; clicks into the foot that face the bed its way, and the half used; inhibit by position; one explosion a tick, across a crystal search and a bed search sharing a log; the monitor and recorder told the bed is gone; builders naming what is missing |
+| `PlaceTests` | every way into a hole, each on the face turned toward it; strict direction from the side; the nearest click and the least turn; clicking a block itself from above and below; air places; faces behind walls, out of reach and covered; hit points at the centre and nearest, relative hits; a surround planned two a tick in order, filled and occupied cells skipped with reasons, a bridge built out against itself, out-of-order cells unreachable, supports one and two deep counted against the limit |
+| `HoleTests` | singles, doubles along x and z and quads found in an obsidian ground, and trenches, missing headroom and a dirt wall not; safe only with bedrock walls and floor; nearest first, radius, found by any cell, equal when found again, shapes to choose; in the hole by footprint and wall height; a walker heading for a hole likely in, no sooner than possible and near the likely tick; a runner passing it not; holes beyond the horizon left out; a speed hacker in sooner and possibly sooner, the sprint-over split, and a prior leaning toward holes; the hole it is in first, a hole someone else is in occupied; builders naming what is missing |
 
 ---
 
 ## Not yet included
 
-- **Placement facing and multiplace** — which face to click and whether a server
-  will accept it ("strict direction"), and planning several placements a tick.
 - **Respawn anchors** — a device on the shared engine: placing, charging with
   glowstone, and exploding outside the Nether are not written yet.
-- **Melee, city, surround, holes** — later capabilities alongside the crystal search.
+- **A fast path when nothing wins** — with every spot too weak (an enemy deep in
+  a hole), pruning never starts and every viable spot is estimated: about twice a
+  normal search on the test grid. Worth measuring on real worlds first.
+- **Melee and city** — later capabilities alongside the crystal search. Surround,
+  auto-fill and traps are modules on the placement planner and `HoleWatch`.
 - **Reference profiles** — whether to ship an optional `combat-vanilla` module of
   tested profiles per version is still open.

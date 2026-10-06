@@ -35,6 +35,12 @@ import java.util.Locale;
  * {@link #getBox()} and {@link #getEyePosition()} build their value once per
  * tick on first ask.
  *
+ * <p><b>Its recent past.</b> It also keeps where it was over the last few ticks
+ * in a row &mdash; {@link #positionAgo} &mdash; as many as its tracker's
+ * {@linkplain EntityTracker#setHistory history} allows. That is what
+ * {@code Core.prediction()} reads to work out how it is moving. A tick it was not
+ * seen breaks the run, and the history starts again from the tick it reappears.
+ *
  * <p>Read on the game thread.
  *
  * @param <E> the game's type for this entity
@@ -66,8 +72,36 @@ public final class Tracked<E> {
     private Vec3 eye;
     private Box box;
 
-    Tracked(E handle) {
+    /** The last few ticks' positions and yaws, newest at {@code historyHead - 1}; a ring. */
+    private final double[] historyX;
+    private final double[] historyY;
+    private final double[] historyZ;
+    private final float[] historyYaw;
+    private final boolean[] historyFresh;
+    private int historyHead;
+    private int historySize;
+    /** The fewest ticks without news after which holding still counts as news. */
+    private final int updateGap;
+    private long stamp = -1L;
+    private int quiet;
+    private int sinceFresh;
+    /** Ticks between its last three pieces of news: how often the server sends it, as seen. */
+    private final int[] intervals = new int[3];
+    private int intervalCount;
+    private int sinceNews;
+
+    /**
+     * @param history how many ticks of position to keep, now included; at least 1
+     * @param updateGap ticks without a new position after which holding still counts as one
+     */
+    Tracked(E handle, int history, int updateGap) {
         this.handle = handle;
+        this.historyX = new double[history];
+        this.historyY = new double[history];
+        this.historyZ = new double[history];
+        this.historyYaw = new float[history];
+        this.historyFresh = new boolean[history];
+        this.updateGap = updateGap;
     }
 
     /**
@@ -77,6 +111,28 @@ public final class Tracked<E> {
      *        entity was seen last tick too, so the difference is a velocity
      */
     void update(Reading reading, long tick) {
+        boolean fresh;
+        if (lastSeen != tick - 1) {
+            fresh = true;
+            quiet = 0;
+            sinceNews = 0;
+            intervalCount = 0;
+        } else {
+            boolean news = reading.stamp != -1L
+                    ? reading.stamp != stamp
+                    : reading.x != x || reading.y != y || reading.z != z;
+            sinceNews++;
+            if (news) {
+                intervals[intervalCount % intervals.length] = sinceNews;
+                intervalCount++;
+                sinceNews = 0;
+            }
+            quiet = news ? 0 : quiet + 1;
+            // Quiet for longer than the server usually leaves it means it is standing still.
+            fresh = news || quiet >= Math.max(updateGap, usualInterval());
+        }
+        stamp = reading.stamp;
+        sinceFresh = fresh ? 0 : sinceFresh + 1;
         if (lastSeen == tick - 1) {
             velocityX = reading.x - x;
             velocityY = reading.y - y;
@@ -87,6 +143,16 @@ public final class Tracked<E> {
             velocityY = 0d;
             velocityZ = 0d;
             ticksTracked = 0;
+            historySize = 0;                     // not seen last tick: the run starts again
+        }
+        historyX[historyHead] = reading.x;
+        historyY[historyHead] = reading.y;
+        historyZ[historyHead] = reading.z;
+        historyYaw[historyHead] = reading.yaw;
+        historyFresh[historyHead] = fresh;
+        historyHead = (historyHead + 1) % historyX.length;
+        if (historySize < historyX.length) {
+            historySize++;
         }
         x = reading.x;
         y = reading.y;
@@ -118,6 +184,11 @@ public final class Tracked<E> {
     /** @return whether the tracker still holds this entity */
     public boolean isTracked() {
         return !removed;
+    }
+
+    /** @return the refresh this reading is from: {@code EntityService.getTick()} when it was taken */
+    public long getTick() {
+        return lastSeen;
     }
 
     /** @return ticks in a row this entity has been tracked; 0 on the tick it appeared */
@@ -187,8 +258,8 @@ public final class Tracked<E> {
 
     /**
      * @return where it will be in {@code ticks} ticks if it keeps its last tick's
-     *         velocity. A straight line; for anything that obeys gravity and
-     *         walls, use {@code Core.simulation()}
+     *         velocity. A straight line, through walls and without gravity; for
+     *         where it will really be, use {@code Core.prediction()}
      */
     public Vec3 extrapolate(int ticks) {
         return Vec3.of(x + velocityX * ticks, y + velocityY * ticks, z + velocityZ * ticks);
@@ -196,6 +267,114 @@ public final class Tracked<E> {
 
     public float getYaw() {
         return yaw;
+    }
+
+    /**
+     * A stand-in for this entity at {@code position}: the same game object, size,
+     * facing and velocity, its box moved with it. For asking "what if it were
+     * there" of anything that measures a {@code Tracked} &mdash; where a prediction
+     * says it will be when an explosion lands, say.
+     *
+     * <p>No tracker holds it, so {@link #isTracked()} is false, and its history is
+     * just this one position. Taken now, it does not move with the entity.
+     */
+    public Tracked<E> projected(Vec3 position) {
+        Tracked<E> copy = new Tracked<>(handle, 1, 1);
+        double dx = position.getX() - x;
+        double dy = position.getY() - y;
+        double dz = position.getZ() - z;
+        copy.x = position.getX();
+        copy.y = position.getY();
+        copy.z = position.getZ();
+        copy.minX = minX + dx;
+        copy.minY = minY + dy;
+        copy.minZ = minZ + dz;
+        copy.maxX = maxX + dx;
+        copy.maxY = maxY + dy;
+        copy.maxZ = maxZ + dz;
+        copy.velocityX = velocityX;
+        copy.velocityY = velocityY;
+        copy.velocityZ = velocityZ;
+        copy.eyeHeight = eyeHeight;
+        copy.yaw = yaw;
+        copy.pitch = pitch;
+        copy.ticksTracked = ticksTracked;
+        copy.lastSeen = lastSeen;
+        copy.removed = true;
+        copy.historyX[0] = copy.x;
+        copy.historyY[0] = copy.y;
+        copy.historyZ[0] = copy.z;
+        copy.historyYaw[0] = yaw;
+        copy.historyFresh[0] = true;
+        copy.historySize = 1;
+        copy.historyHead = 0;
+        return copy;
+    }
+
+    // ------------------------------------------------------------- history
+
+    /**
+     * @return how many ticks in a row of position this holds, this tick's
+     *         included: 1 on the tick it appeared, up to its tracker's
+     *         {@linkplain EntityTracker#setHistory history}
+     */
+    public int getHistorySize() {
+        return historySize;
+    }
+
+    /**
+     * @param ticksAgo 0 for this tick, 1 for the one before
+     * @return where it was then, or null past the history
+     */
+    public Vec3 positionAgo(int ticksAgo) {
+        if (ticksAgo < 0 || ticksAgo >= historySize) {
+            return null;
+        }
+        int at = indexAgo(ticksAgo);
+        return Vec3.of(historyX[at], historyY[at], historyZ[at]);
+    }
+
+    /** @return which way it faced {@code ticksAgo} ticks ago, or NaN past the history */
+    public float yawAgo(int ticksAgo) {
+        return ticksAgo < 0 || ticksAgo >= historySize ? Float.NaN : historyYaw[indexAgo(ticksAgo)];
+    }
+
+    /**
+     * @return whether the position {@code ticksAgo} ticks ago was news: a new
+     *         position from the server, or holding still long enough to be sure of
+     *         it. False past the history. See {@link EntitySource#positionStamp}
+     */
+    public boolean isFreshAgo(int ticksAgo) {
+        return ticksAgo >= 0 && ticksAgo < historySize && historyFresh[indexAgo(ticksAgo)];
+    }
+
+    /** @return the stamp your source gave with this tick's position; -1 when it gives none */
+    public long getPositionStamp() {
+        return stamp;
+    }
+
+    /** @return ticks since its position was last news: 0 when this tick's was */
+    public int getTicksSinceFresh() {
+        return sinceFresh;
+    }
+
+    /** @return the median of the last three intervals between news; 1 before any */
+    private int usualInterval() {
+        if (intervalCount == 0) {
+            return 1;
+        }
+        if (intervalCount < intervals.length) {
+            return intervals[intervalCount - 1];
+        }
+        int a = intervals[0];
+        int b = intervals[1];
+        int c = intervals[2];
+        return Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
+    }
+
+    private int indexAgo(int ticksAgo) {
+        int length = historyX.length;
+        return ((historyHead - 1 - ticksAgo) % length + length) % length;
     }
 
     public float getPitch() {

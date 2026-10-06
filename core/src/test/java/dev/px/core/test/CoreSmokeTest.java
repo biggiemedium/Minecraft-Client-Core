@@ -2,6 +2,7 @@ package dev.px.core.test;
 
 import dev.px.core.test.harness.Checks;
 import dev.px.core.test.harness.TestClient;
+import dev.px.core.test.suite.BehaviourTests;
 import dev.px.core.test.suite.CommandTests;
 import dev.px.core.test.suite.ConcurrentTests;
 import dev.px.core.test.suite.ConfigStorageTests;
@@ -15,6 +16,8 @@ import dev.px.core.test.suite.MathTests;
 import dev.px.core.test.suite.ModuleTests;
 import dev.px.core.test.suite.MovementTests;
 import dev.px.core.test.suite.NetworkTests;
+import dev.px.core.test.suite.PredictionTests;
+import dev.px.core.test.suite.RecordingTests;
 import dev.px.core.test.suite.RegistryTests;
 import dev.px.core.test.suite.RotationTests;
 import dev.px.core.test.suite.ServiceTests;
@@ -76,6 +79,9 @@ public final class CoreSmokeTest {
         ShaderTests.run(client);
         RotationTests.run(client);
         SimulationTests.run(client);
+        PredictionTests.run(client);
+        BehaviourTests.run();
+        RecordingTests.run();
         TimelineTests.run(client);
         NetworkTests.run(client);
         TargetingTests.run(client);

@@ -5,6 +5,8 @@ import dev.px.combat.bed.BedPart;
 import dev.px.combat.bed.BedRules;
 import dev.px.combat.explosion.ExplosionModel;
 import dev.px.combat.explosion.Explosive;
+import dev.px.combat.place.Click;
+import dev.px.combat.place.Clicks;
 import dev.px.combat.search.engine.ExplosiveSearch;
 import dev.px.combat.search.engine.Found;
 import dev.px.combat.search.engine.PlaceDevice;
@@ -12,6 +14,7 @@ import dev.px.combat.search.engine.SearchStats;
 import dev.px.combat.search.engine.UseDevice;
 import dev.px.combat.search.option.BedPlaceOption;
 import dev.px.combat.search.option.BedUseOption;
+import dev.px.combat.search.rule.AimCost;
 import dev.px.combat.search.rule.Reach;
 import dev.px.combat.search.timing.AttackLog;
 import dev.px.combat.world.BlockView;
@@ -64,13 +67,17 @@ import java.util.function.Supplier;
  *       false &mdash; in the Overworld, say &mdash; nothing is found.
  *   <li><b>Placing.</b> Up to four spots per cell, one per way the bed can face:
  *       every compass direction unless {@link Builder#facings} narrows it. Reach is
- *       measured to the foot's cell, the one you place into.
+ *       measured to the foot's cell, the one you place into, and you aim at its
+ *       centre. That point says nothing of the facing, which comes from your yaw
+ *       as you place: narrow {@code facings} to the way you face if your aim cost
+ *       must account for it.
  *   <li><b>At once.</b> A bed is placed and used in the same tick, so what has
  *       already gone off this tick counts against a placement, as it does
  *       against a bed already standing.
  *   <li><b>Beds in the world</b> are blocks, found by a scan of the cells around
  *       you with your {@code BedLookup}, and remembered by position for inhibit.
- *       Either usable half in reach will do; the option says which to click.
+ *       Either usable half in reach will do; the option says which to click, and
+ *       you aim at its centre.
  *   <li><b>No minimum age.</b> The game says nothing of how long a bed has stood,
  *       so {@code Thresholds.breakMinAge} never stops one.
  * </ul>
@@ -86,6 +93,8 @@ public final class BedSearch<E> {
 
     private final BedRules<E> rules;
     private final Supplier<Direction[]> facings;
+    /** Null without click rules. */
+    private final Clicks clicks;
     private final ExplosiveSearch<E> engine;
     private final Placing placing = new Placing();
     private final Using using = new Using();
@@ -95,6 +104,7 @@ public final class BedSearch<E> {
     private BedSearch(Builder<E> builder) {
         this.rules = builder.rules;
         this.facings = builder.facings;
+        this.clicks = builder.clicks;
         this.engine = builder.newEngine();
     }
 
@@ -104,8 +114,9 @@ public final class BedSearch<E> {
 
     /** @return the best place to put a bed and set it off now, or null when nowhere is worth it */
     public BedPlaceOption<E> findPlace() {
+        placing.chosen.clear();
         Found<E, Bed> found = engine.findPlace(placing);
-        return found == null ? null : new BedPlaceOption<>(found.getSubject(), found);
+        return found == null ? null : new BedPlaceOption<>(found.getSubject(), found, placing.chosen.get(found.getSubject()));
     }
 
     /**
@@ -115,10 +126,11 @@ public final class BedSearch<E> {
      * @return at most {@code count} options, one per cell and facing; empty when nowhere is worth it
      */
     public List<BedPlaceOption<E>> findPlaces(int count) {
+        placing.chosen.clear();
         List<Found<E, Bed>> found = engine.findPlaces(placing, count);
         List<BedPlaceOption<E>> places = new ArrayList<>(found.size());
         for (Found<E, Bed> option : found) {
-            places.add(new BedPlaceOption<>(option.getSubject(), option));
+            places.add(new BedPlaceOption<>(option.getSubject(), option, placing.chosen.get(option.getSubject())));
         }
         return places;
     }
@@ -126,8 +138,10 @@ public final class BedSearch<E> {
     /** @return the best bed already in the world to use now, or null when none is worth it */
     public BedUseOption<E> findUse() {
         reached.clear();
+        using.chosen.clear();
         Found<E, Bed> found = engine.findUse(using);
-        return found == null ? null : new BedUseOption<>(found.getSubject(), reached.get(found.getSubject()), found);
+        return found == null ? null : new BedUseOption<>(found.getSubject(), reached.get(found.getSubject()), found,
+                using.chosen.get(found.getSubject()));
     }
 
     /**
@@ -193,6 +207,43 @@ public final class BedSearch<E> {
     /** A bed placed with its foot in a cell, one spot per way it may face. */
     private final class Placing implements PlaceDevice<E, Bed> {
 
+        /** The click each bed was judged clickable by, this search. */
+        final Map<Bed, Click> chosen = new HashMap<>();
+
+        /**
+         * A click into the foot's cell, looking along which faces the bed the way
+         * it is meant to face: the game takes a bed's facing from your yaw.
+         */
+        @Override
+        public boolean clickable(Vec3 eye, Bed bed) {
+            if (clicks == null) {
+                return true;
+            }
+            List<Click> facingRight = new ArrayList<>();
+            for (Click click : clicks.into(eye, bed.getFoot())) {
+                if (Direction.fromYaw(click.getRotation(eye).getYaw()) == bed.getFacing()) {
+                    facingRight.add(click);
+                }
+            }
+            Click best = null;
+            for (Click click : facingRight) {
+                if (best == null || click.getHit().distanceTo(eye) < best.getHit().distanceTo(eye)) {
+                    best = click;
+                }
+            }
+            if (best == null) {
+                return false;
+            }
+            chosen.put(bed, best);
+            return true;
+        }
+
+        @Override
+        public Vec3 aim(Vec3 eye, Bed bed) {
+            Click click = chosen.get(bed);
+            return click != null ? click.getHit() : aim(bed);
+        }
+
         @Override
         public ExplosionModel<E> model() {
             return rules.getModel();
@@ -237,6 +288,11 @@ public final class BedSearch<E> {
         }
 
         @Override
+        public Vec3 aim(Bed bed) {
+            return bed.getFoot().center();
+        }
+
+        @Override
         public boolean firesAtOnce() {
             return true;
         }
@@ -244,6 +300,30 @@ public final class BedSearch<E> {
 
     /** Beds already in the world, found by their heads. */
     private final class Using implements UseDevice<E, Bed> {
+
+        /** The click each bed was judged usable by, this search. */
+        final Map<Bed, Click> chosen = new HashMap<>();
+
+        /** The half reached, clicked on a face your rules accept. */
+        @Override
+        public boolean clickable(Vec3 eye, Bed bed) {
+            if (clicks == null) {
+                return true;
+            }
+            BedPart part = reached.get(bed);
+            Click click = clicks.bestOn(eye, bed.get(part != null ? part : BedPart.HEAD));
+            if (click == null) {
+                return false;
+            }
+            chosen.put(bed, click);
+            return true;
+        }
+
+        @Override
+        public Vec3 aim(Vec3 eye, Bed bed) {
+            Click click = chosen.get(bed);
+            return click != null ? click.getHit() : aim(bed);
+        }
 
         @Override
         public ExplosionModel<E> model() {
@@ -303,6 +383,12 @@ public final class BedSearch<E> {
         }
 
         @Override
+        public Vec3 aim(Bed bed) {
+            BedPart part = reached.get(bed);           // inReach found it moments ago
+            return bed.get(part != null ? part : BedPart.HEAD).center();
+        }
+
+        @Override
         public Object key(Bed bed) {
             return bed;
         }
@@ -323,6 +409,7 @@ public final class BedSearch<E> {
 
         private BedRules<E> rules;
         private Supplier<Direction[]> facings = Direction::horizontals;
+        private Clicks clicks;
 
         private Builder() {
         }
@@ -348,9 +435,25 @@ public final class BedSearch<E> {
             return this;
         }
 
+        /**
+         * How placing and using work on your server. With them, a bed is only
+         * offered with a click your rules allow &mdash; one that, looked along, faces
+         * the bed the right way &mdash; and the options say which. Without them,
+         * any bed in reach.
+         */
+        public Builder<E> clicks(Clicks clicks) {
+            this.clicks = Validate.notNull(clicks, "clicks");
+            return this;
+        }
+
         /** Required: how far away you use a bed. */
         public Builder<E> useReach(Reach reach) {
             return reachToUse(reach);
+        }
+
+        /** What turning to look at a bed costs before you use it. {@link AimCost#NONE} unless set. */
+        public Builder<E> useAimCost(AimCost cost) {
+            return aimCostToUse(cost);
         }
 
         /** @throws IllegalStateException naming each required part not given */

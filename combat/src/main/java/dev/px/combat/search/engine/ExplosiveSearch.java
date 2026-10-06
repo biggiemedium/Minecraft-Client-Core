@@ -8,6 +8,8 @@ import dev.px.combat.search.option.Harm;
 import dev.px.combat.search.option.Option;
 import dev.px.combat.search.option.Proposal;
 import dev.px.combat.search.option.Trigger;
+import dev.px.combat.search.rule.AimCost;
+import dev.px.combat.search.rule.Lookahead;
 import dev.px.combat.search.rule.OptionFilter;
 import dev.px.combat.search.rule.Reach;
 import dev.px.combat.search.rule.ReachPoint;
@@ -30,6 +32,7 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -61,19 +64,46 @@ import java.util.function.Supplier;
  * <ol>
  *   <li><b>Scan</b> every cell in a cube around your eyes that reaches the place
  *       range, cheapest test first: distance, then the device's spots in the
- *       cell, then, past the wall range, whether the cell can be seen.
+ *       cell, then, past the wall range, whether the cell can be seen, then
+ *       whether you can turn to each spot in time.
  *   <li><b>Bound</b> each spot against each target: the damage it would do with
  *       nothing in the way, which costs no raycasting. A spot whose bound cannot
  *       meet any target's threshold is dropped there.
  *   <li><b>Branch and bound.</b> Spots are tried best bound first, with exact,
- *       raycast estimates; once the best option found scores higher than the next
- *       bound, nothing left can win and the search stops. Asked for the best
+ *       raycast estimates; once the best option found ranks higher than the next
+ *       bound, nothing left can win and the search stops. A spot's bound is
+ *       lowered by its {@linkplain AimCost aim cost}, worked out without rays, so
+ *       aiming keeps this exact. Asked for the best
  *       {@code n} with {@link #findPlaces}, it stops once the {@code n}th best does.
  * </ol>
  *
  * <p>Each spot is offered once, against the target it is best for. The best
  * {@code n} are alternatives &mdash; somewhere to go when you cannot reach the
  * first &mdash; not a set to place together: two may overlap.
+ *
+ * <h2>Aiming</h2>
+ *
+ * <p>Every option says where you would look to act on it &mdash;
+ * {@link Option#getAim()}, from the device &mdash; and an {@link AimCost} of yours,
+ * one for placing and one for setting off, says what turning there is worth in
+ * damage. Options rank by score less that cost, so a spot you can hit now can beat
+ * a stronger one behind you, and one you cannot turn to in time is dropped before
+ * anything is raycast. The search never turns you: your rotation manager, whichever
+ * it is, turns to {@code getAim()}.
+ *
+ * <h2>Looking ahead</h2>
+ *
+ * <p>With a {@link Settings#placeDelay} or {@link Settings#useDelay}, damage is
+ * scored where your {@link Lookahead} says each target, you, and everyone
+ * protected will be when the explosion lands. {@link Lookahead#none()} unless
+ * set; the search never knows how it is answered.
+ *
+ * <h2>Placing, then breaking</h2>
+ *
+ * <p>{@link #placed} remembers what you placed until it shows up: until then no
+ * spot whose {@linkplain PlaceDevice#needs room} it takes up is offered, and
+ * {@link #planPlaces} plans several that do not collide. When it shows up, it is
+ * {@linkplain Option#isOwn yours}.
  *
  * <h2>Protecting, and your own filters</h2>
  *
@@ -112,7 +142,8 @@ import java.util.function.Supplier;
  * scan, V those viable after bounding, and K the explosives the device offers:
  *
  * <pre>
- * scan                (2⌈R⌉ + 1)³ cells     distance + P placement tests each; one sight test each past the wall range
+ * scan                (2⌈R⌉ + 1)³ cells     distance + P placement tests each; one sight test each past the wall range;
+ *                                           one aim cost per spot seen
  * bound               O(B · T)              no rays
  * order               O(V log V)            one sort
  * exact, worst case   O(V · (T + 1) · S · L)
@@ -125,7 +156,8 @@ import java.util.function.Supplier;
  * estimate only for those the bound cannot clear, or that a filter asks about.
  *
  * <p>Pruning assumes damage never falls as exposure rises, and that a
- * {@link Score} never exceeds the damage to the target; turn it off with
+ * {@link Score} never exceeds the damage to the target &mdash; an aim cost, being
+ * exact, needs nothing; turn it off with
  * {@link Settings#pruning(boolean)} for a model or score that breaks either.
  * Protection then raycasts everyone it protects instead of trusting the bound.
  *
@@ -134,6 +166,12 @@ import java.util.function.Supplier;
  * @param <E> the game's type for what can be hurt
  */
 public final class ExplosiveSearch<E> {
+
+    /** Ticks a placement is waited for unless {@code pendingTicks} says otherwise: half a second. A tuning knob. */
+    public static final int DEFAULT_PENDING_TICKS = 10;
+
+    /** Ticks an explosive that showed up where you placed it is remembered as yours: longer than any lives. */
+    private static final int OWN_MEMORY = 400;
 
     private final EntityService entities;
     private final TargetService targetService;
@@ -145,6 +183,14 @@ public final class ExplosiveSearch<E> {
     private final Reach placeReach;
     private final Reach useReach;
     private final Score score;
+    private final AimCost placeAim;
+    private final AimCost useAim;
+    private final Lookahead<E> lookahead;
+    private final IntSupplier placeDelay;
+    private final IntSupplier useDelay;
+    private final IntSupplier pendingTicks;
+    /** Null when nobody is listening. */
+    private final SearchListener<E> listener;
     private final boolean pruning;
     private final List<OptionFilter<E>> filters;
     private final AttackLog log;
@@ -165,6 +211,13 @@ public final class ExplosiveSearch<E> {
         this.placeReach = settings.placeReach;
         this.useReach = settings.useReach;
         this.score = settings.score;
+        this.placeAim = settings.placeAim;
+        this.useAim = settings.useAim;
+        this.lookahead = settings.lookahead;
+        this.placeDelay = settings.placeDelay;
+        this.useDelay = settings.useDelay;
+        this.pendingTicks = settings.pendingTicks;
+        this.listener = settings.listener;
         this.pruning = settings.pruning;
         this.filters = Collections.unmodifiableList(new ArrayList<>(settings.filters));
         this.ownsLog = settings.log == null;
@@ -199,9 +252,60 @@ public final class ExplosiveSearch<E> {
     public <S> List<Found<E, S>> findPlaces(PlaceDevice<E, S> device, int count) {
         Validate.notNull(device, "device");
         Validate.check(count > 0, "count must be positive");
+        return search(device, count, Collections.<Box>emptyList());
+    }
+
+    /**
+     * Up to {@code count} spots to place {@code device}'s explosive at together:
+     * each the best that does not collide with the ones before it, or with
+     * anything placed and not yet shown. Several placements a tick, where
+     * {@link #findPlaces} gives alternatives to one.
+     *
+     * <p>A search per spot. A device that does not say what its explosive
+     * {@linkplain PlaceDevice#occupies occupies} gets one spot, since nothing says
+     * which others would collide with it.
+     *
+     * @return at most {@code count} spots, best first; empty when nowhere is worth it
+     */
+    public <S> List<Found<E, S>> planPlaces(PlaceDevice<E, S> device, int count) {
+        Validate.notNull(device, "device");
+        Validate.check(count > 0, "count must be positive");
+        List<Found<E, S>> plan = new ArrayList<>(count);
+        List<Box> taken = new ArrayList<>(count);
+        while (plan.size() < count) {
+            List<Found<E, S>> next = search(device, 1, taken);
+            if (next.isEmpty()) {
+                break;
+            }
+            Found<E, S> found = next.get(0);
+            plan.add(found);
+            Box room = device.occupies(found.getSubject());
+            if (room == null) {
+                break;
+            }
+            taken.add(room);
+        }
+        return Collections.unmodifiableList(plan);
+    }
+
+    /**
+     * You placed {@code device}'s explosive at {@code spot}: until it shows up, or
+     * its wait runs out, nothing collides with it, and when it shows up it is
+     * {@linkplain Option#isOwn yours}. Nothing for a device that fires at once.
+     */
+    public <S> void placed(PlaceDevice<E, S> device, S spot) {
+        Validate.notNull(device, "device");
+        Validate.notNull(spot, "spot");
+        Box room = device.occupies(spot);
+        if (room != null && !device.firesAtOnce()) {
+            log.placed(room, pendingTicks.getAsInt());
+        }
+    }
+
+    private <S> List<Found<E, S>> search(PlaceDevice<E, S> device, int count, List<Box> taken) {
         SearchStats stats = new SearchStats();
         lastPlace = stats;
-        Context context = device.active() ? context() : null;
+        Context context = device.active() ? context(placeDelay) : null;
         if (context == null) {
             return Collections.emptyList();
         }
@@ -237,7 +341,21 @@ public final class ExplosiveSearch<E> {
                     }
                     stats.visible += spots.size();
                     for (S spot : spots) {
-                        Candidate<S> candidate = bound(spot, device.origin(spot), blast, context, stats);
+                        if (blocked(device.needs(spot), taken)) {
+                            stats.pending++;
+                            continue;
+                        }
+                        if (!device.clickable(eye, spot)) {
+                            stats.unclickable++;
+                            continue;
+                        }
+                        Vec3 aim = device.aim(eye, spot);
+                        double aimCost = placeAim.cost(eye, aim);
+                        if (!Double.isFinite(aimCost)) {
+                            stats.unaimable++;
+                            continue;
+                        }
+                        Candidate<S> candidate = bound(spot, device.origin(spot), aim, aimCost, blast, context, stats);
                         if (candidate != null) {
                             stats.viable++;
                             candidates.add(candidate);
@@ -251,17 +369,30 @@ public final class ExplosiveSearch<E> {
         List<Found<E, S>> best = new ArrayList<>(Math.min(count, candidates.size()));
         for (int i = 0; i < candidates.size(); i++) {
             Candidate<S> candidate = candidates.get(i);
-            if (pruning && best.size() == count && candidate.best < best.get(count - 1).getScore()) {
+            if (pruning && best.size() == count && candidate.best < best.get(count - 1).getRank()) {
                 stats.pruned += candidates.size() - i;
                 break;
             }
-            Found<E, S> option = judgeAll(candidate.spot, candidate.origin, device.blocksWhenFired(candidate.spot),
-                    blast, candidate.bounds, atOnce, context, stats);
+            Found<E, S> option = judgeAll(candidate.spot, candidate.origin, candidate.aim, candidate.aimCost, false,
+                    device.blocksWhenFired(candidate.spot), blast, candidate.bounds, atOnce, context, stats);
             if (option != null) {
                 keep(best, option, count);
             }
         }
         return Collections.unmodifiableList(best);
+    }
+
+    /** @return whether {@code needs} collides with something placed and not yet shown, or already planned */
+    private boolean blocked(Box needs, List<Box> taken) {
+        if (needs == null) {
+            return false;
+        }
+        for (Box room : taken) {
+            if (room.intersects(needs)) {
+                return true;
+            }
+        }
+        return log.isPendingIn(needs);
     }
 
     /** Puts {@code option} in its place among the best {@code count}, best first; an equal one stays behind. */
@@ -279,19 +410,24 @@ public final class ExplosiveSearch<E> {
         }
     }
 
-    /** The most each target could take from a spot: no rays. Null when none could reach its threshold. */
-    private <S> Candidate<S> bound(S spot, Vec3 origin, Blast blast, Context context, SearchStats stats) {
+    /**
+     * The most each target could take from a spot: no rays. Null when none could
+     * reach its threshold. The spot's best rank is the most any could take, less
+     * the aim cost.
+     */
+    private <S> Candidate<S> bound(S spot, Vec3 origin, Vec3 aim, double aimCost, Blast blast, Context context,
+                                   SearchStats stats) {
         double[] bounds = new double[context.targets.size()];
         double best = Double.NEGATIVE_INFINITY;
         for (int t = 0; t < bounds.length; t++) {
             TargetInfo<E> info = context.targets.get(t);
             stats.bounds++;
-            bounds[t] = blast.bound.damage(origin, blast.explosive, info.target, BlockView.EMPTY);
+            bounds[t] = blast.bound.damage(origin, blast.explosive, info.at, BlockView.EMPTY);
             if (bounds[t] >= info.floor && bounds[t] > 0d) {
                 best = Math.max(best, bounds[t]);
             }
         }
-        return best == Double.NEGATIVE_INFINITY ? null : new Candidate<>(spot, origin, bounds, best);
+        return best == Double.NEGATIVE_INFINITY ? null : new Candidate<>(spot, origin, aim, aimCost, bounds, best - aimCost);
     }
 
     // ------------------------------------------------------------ setting off
@@ -301,7 +437,7 @@ public final class ExplosiveSearch<E> {
         Validate.notNull(device, "device");
         SearchStats stats = new SearchStats();
         lastUse = stats;
-        Context context = device.active() ? context() : null;
+        Context context = device.active() ? context(useDelay) : null;
         if (context == null) {
             return null;
         }
@@ -331,7 +467,7 @@ public final class ExplosiveSearch<E> {
         Validate.notNull(explosive, "explosive");
         SearchStats stats = new SearchStats();
         lastUse = stats;
-        Context context = device.active() ? context() : null;
+        Context context = device.active() ? context(useDelay) : null;
         if (context == null) {
             return null;
         }
@@ -349,11 +485,24 @@ public final class ExplosiveSearch<E> {
             stats.tooYoung++;
             return null;
         }
-        if (!device.inReach(explosive, context.self.getEyePosition(), useReach)) {
+        Vec3 eye = context.self.getEyePosition();
+        if (!device.inReach(explosive, eye, useReach)) {
             return null;
         }
-        return judgeAll(explosive, device.origin(explosive), device.blocksWhenFired(explosive), blast,
-                null, true, context, stats);
+        if (!device.clickable(eye, explosive)) {
+            stats.unclickable++;
+            return null;
+        }
+        Vec3 aim = device.aim(eye, explosive);
+        double aimCost = useAim.cost(eye, aim);
+        if (!Double.isFinite(aimCost)) {
+            stats.unaimable++;
+            return null;
+        }
+        Box room = device.occupies(explosive);
+        boolean own = room != null && log.arrived(device.key(explosive), room, OWN_MEMORY);
+        return judgeAll(explosive, device.origin(explosive), aim, aimCost, own, device.blocksWhenFired(explosive),
+                blast, null, true, context, stats);
     }
 
     /**
@@ -364,7 +513,7 @@ public final class ExplosiveSearch<E> {
         Validate.notNull(device, "device");
         Validate.notNull(explosive, "explosive");
         log.attacked(device.key(explosive), thresholds.inhibitTicks());
-        Context context = context();
+        Context context = context(useDelay);
         if (context == null) {
             return;
         }
@@ -372,9 +521,9 @@ public final class ExplosiveSearch<E> {
         BlockView world = device.blocksWhenFired(explosive);
         ExplosionModel<E> model = device.model();
         for (TargetInfo<E> info : context.targets) {
-            log.dealt(info.target.get(), model.damage(origin, device.explosive(), info.target, world));
+            log.dealt(info.target.get(), model.damage(origin, device.explosive(), info.at, world));
         }
-        log.dealt(context.self.get(), model.damage(origin, device.explosive(), context.self, world));
+        log.dealt(context.self.get(), model.damage(origin, device.explosive(), context.selfAt, world));
     }
 
     // ---------------------------------------------------------------- timing
@@ -416,8 +565,8 @@ public final class ExplosiveSearch<E> {
      * @param bounds each target's bound, to skip ones that cannot pass; null to try every target
      * @param counted whether what has gone off this tick counts against it
      */
-    private <T> Found<E, T> judgeAll(T subject, Vec3 origin, BlockView world, Blast blast, double[] bounds,
-                                     boolean counted, Context context, SearchStats stats) {
+    private <T> Found<E, T> judgeAll(T subject, Vec3 origin, Vec3 aim, double aimCost, boolean own, BlockView world,
+                                     Blast blast, double[] bounds, boolean counted, Context context, SearchStats stats) {
         double self = Double.NaN;
         Harms harms = null;
         Found<E, T> best = null;
@@ -427,40 +576,57 @@ public final class ExplosiveSearch<E> {
                 continue;
             }
             stats.evaluated++;
-            double damage = blast.model.damage(origin, blast.explosive, info.target, world);
+            double damage = blast.model.damage(origin, blast.explosive, info.at, world);
             Trigger trigger = judge(damage, counted ? log.dealtTo(info.target.get()) : 0d, info);
             if (trigger == null) {
+                report(bounds != null, subject, origin, info, damage, self, null, Judgement.Verdict.TOO_WEAK);
                 continue;
             }
             if (Double.isNaN(self)) {
                 stats.selfEvaluated++;
-                self = blast.model.damage(origin, blast.explosive, context.self, world);
+                self = blast.model.damage(origin, blast.explosive, context.selfAt, world);
                 if (counted) {
                     // Only the highest explosion a tick lands, on you as on them.
                     self = Math.max(self, log.dealtTo(context.self.get()));
                 }
                 if (context.suicidal(self)) {
+                    report(bounds != null, subject, origin, info, damage, self, trigger, Judgement.Verdict.SUICIDAL);
                     return null;                 // too dangerous for anyone
                 }
                 harms = new Harms(origin, world, blast, context, stats);
                 if (harms.endangers()) {
                     stats.endangering++;
+                    report(bounds != null, subject, origin, info, damage, self, trigger, Judgement.Verdict.ENDANGERS);
                     return null;                 // whoever it is for, it hurts someone protected
                 }
             }
             if (!context.selfAllows(self, trigger)) {
+                report(bounds != null, subject, origin, info, damage, self, trigger, Judgement.Verdict.SELF_CAP);
                 continue;
             }
             double value = score.score(damage, self);
-            if (!better(value, self, best)) {
+            if (!better(value - aimCost, self, best)) {
+                report(bounds != null, subject, origin, info, damage, self, trigger, Judgement.Verdict.OUTRANKED);
                 continue;
             }
-            Found<E, T> option = new Found<>(subject, origin, info.target, damage, self, value, trigger);
+            Found<E, T> option = new Found<>(subject, origin, aim, info.target, damage, self, value, aimCost, trigger,
+                    own);
             if (accepted(option, harms, stats)) {
                 best = option;
+                report(bounds != null, subject, origin, info, damage, self, trigger, Judgement.Verdict.PASSED);
+            } else {
+                report(bounds != null, subject, origin, info, damage, self, trigger, Judgement.Verdict.FILTERED);
             }
         }
         return best;
+    }
+
+    /** Tells the listener, if there is one, what became of one estimate. */
+    private void report(boolean placing, Object subject, Vec3 origin, TargetInfo<E> info, double damage, double self,
+                        Trigger trigger, Judgement.Verdict verdict) {
+        if (listener != null) {
+            listener.judged(new Judgement<E>(placing, subject, origin, info.target, damage, self, trigger, verdict));
+        }
     }
 
     /** @return whether every filter takes {@code option} */
@@ -501,9 +667,9 @@ public final class ExplosiveSearch<E> {
         return null;
     }
 
-    /** @return whether an option scoring {@code value} with {@code self} damage beats {@code best}, before making it */
-    private static boolean better(double value, double self, Option<?> best) {
-        return best == null || value > best.getScore() || (value == best.getScore() && self < best.getSelfDamage());
+    /** @return whether an option ranking {@code rank} with {@code self} damage beats {@code best}, before making it */
+    private static boolean better(double rank, double self, Option<?> best) {
+        return best == null || rank > best.getRank() || (rank == best.getRank() && self < best.getSelfDamage());
     }
 
     private double placeDistance(Vec3 eye, int x, int y, int z) {
@@ -518,9 +684,13 @@ public final class ExplosiveSearch<E> {
 
     /**
      * Everything a search reads once: you, the targets and their thresholds, and
-     * who is protected. Null when there is nothing to do.
+     * who is protected, each where the lookahead says they will be when an
+     * explosion set off now lands. Null when there is nothing to do.
+     *
+     * @param delay ticks from now until the explosion lands
      */
-    private Context context() {
+    private Context context(IntSupplier delay) {
+        int ticks = Math.max(0, delay.getAsInt());
         Tracked<? extends E> self = entities.<E>getSelf();
         if (self == null) {
             return null;
@@ -544,13 +714,22 @@ public final class ExplosiveSearch<E> {
         }
         List<TargetInfo<E>> infos = new ArrayList<>(targets.size());
         for (Tracked<? extends E> target : targets) {
-            infos.add(new TargetInfo<>(target, vitals, thresholds));
+            infos.add(new TargetInfo<>(target, ahead(target, ticks), vitals, thresholds));
         }
         List<Guard<E>> guards = new ArrayList<>(guarded.size());
         for (Tracked<? extends E> entity : guarded) {
-            guards.add(new Guard<>(entity, vitals));
+            guards.add(new Guard<>(entity, ahead(entity, ticks), vitals));
         }
-        return new Context(self, infos, guards);
+        return new Context(self, ahead(self, ticks), infos, guards);
+    }
+
+    /** @return where {@code entity} will be in {@code ticks}; itself without looking ahead */
+    private Tracked<? extends E> ahead(Tracked<? extends E> entity, int ticks) {
+        if (ticks == 0) {
+            return entity;
+        }
+        Tracked<? extends E> there = lookahead.at(entity, ticks);
+        return there != null ? there : entity;
     }
 
     private <T extends E> List<Tracked<? extends E>> collect(TargetSelector<T> chosen, int limit) {
@@ -575,16 +754,21 @@ public final class ExplosiveSearch<E> {
         }
     }
 
-    /** A placeable spot, and the most each target could take from it. */
+    /** A placeable spot, what aiming at it costs, and the most each target could take from it. */
     private static final class Candidate<S> {
         final S spot;
         final Vec3 origin;
+        final Vec3 aim;
+        final double aimCost;
         final double[] bounds;
+        /** The best rank any option here could have. */
         final double best;
 
-        Candidate(S spot, Vec3 origin, double[] bounds, double best) {
+        Candidate(S spot, Vec3 origin, Vec3 aim, double aimCost, double[] bounds, double best) {
             this.spot = spot;
             this.origin = origin;
+            this.aim = aim;
+            this.aimCost = aimCost;
             this.bounds = bounds;
             this.best = best;
         }
@@ -593,6 +777,8 @@ public final class ExplosiveSearch<E> {
     /** One target, with its thresholds worked out once per search. */
     private static final class TargetInfo<E> {
         final Tracked<? extends E> target;
+        /** Where it will be when the explosion lands: what damage is measured to. */
+        final Tracked<? extends E> at;
         /** Damage at or past which it is lethal; infinite when lethal checks are off or its health is unknown. */
         final double lethalNeed;
         final double minimum;
@@ -603,8 +789,10 @@ public final class ExplosiveSearch<E> {
         /** The least damage that could pass any threshold: for discarding by bound. */
         final double floor;
 
-        TargetInfo(Tracked<? extends E> target, Vitals<? super E> vitals, Thresholds<? super E> thresholds) {
+        TargetInfo(Tracked<? extends E> target, Tracked<? extends E> at, Vitals<? super E> vitals,
+                   Thresholds<? super E> thresholds) {
             this.target = target;
+            this.at = at;
             E entity = target.get();
             double pool = vitals.isTrusted(entity) ? vitals.pool(entity) : Double.NaN;
             double multiplier = thresholds.lethalMultiplier();
@@ -620,10 +808,13 @@ public final class ExplosiveSearch<E> {
     /** One protected entity, and what it can take; its pool is NaN when your {@code Vitals} do not trust it. */
     private static final class Guard<E> {
         final Tracked<? extends E> entity;
+        /** Where it will be when the explosion lands. */
+        final Tracked<? extends E> at;
         final double pool;
 
-        Guard(Tracked<? extends E> entity, Vitals<? super E> vitals) {
+        Guard(Tracked<? extends E> entity, Tracked<? extends E> at, Vitals<? super E> vitals) {
             this.entity = entity;
+            this.at = at;
             E handle = entity.get();
             this.pool = vitals.isTrusted(handle) ? vitals.pool(handle) : Double.NaN;
         }
@@ -631,7 +822,10 @@ public final class ExplosiveSearch<E> {
 
     /** You, what you can survive, and who must not be hurt. */
     private final class Context {
+        /** You, now: where you reach from. */
         final Tracked<? extends E> self;
+        /** You, when the explosion lands: what your damage is measured to. */
+        final Tracked<? extends E> selfAt;
         final List<TargetInfo<E>> targets;
         final List<Guard<E>> guards;
         /** Self damage at or past which an option is suicide; infinite when anti-suicide is off. */
@@ -643,8 +837,10 @@ public final class ExplosiveSearch<E> {
         /** Whether any protection threshold is on, so there is anything to check. */
         final boolean guarding;
 
-        Context(Tracked<? extends E> self, List<TargetInfo<E>> targets, List<Guard<E>> guards) {
+        Context(Tracked<? extends E> self, Tracked<? extends E> selfAt, List<TargetInfo<E>> targets,
+                List<Guard<E>> guards) {
             this.self = self;
+            this.selfAt = selfAt;
             this.targets = Collections.unmodifiableList(targets);
             this.guards = Collections.unmodifiableList(guards);
             double margin = thresholds.antiSuicideMargin();
@@ -731,7 +927,7 @@ public final class ExplosiveSearch<E> {
         }
 
         private double bound(Guard<E> guard) {
-            return blast.bound.damage(origin, blast.explosive, guard.entity, BlockView.EMPTY);
+            return blast.bound.damage(origin, blast.explosive, guard.at, BlockView.EMPTY);
         }
 
         private double damage(int g) {
@@ -741,7 +937,7 @@ public final class ExplosiveSearch<E> {
                     damage[g] = 0d;              // out of reach: nothing to raycast
                 } else {
                     stats.protectedEvaluated++;
-                    damage[g] = blast.model.damage(origin, blast.explosive, guard.entity, world);
+                    damage[g] = blast.model.damage(origin, blast.explosive, guard.at, world);
                 }
             }
             return damage[g];
@@ -769,6 +965,13 @@ public final class ExplosiveSearch<E> {
         private Reach useReach;
         private TargetSelector<? extends E> protectedSelector;
         private Score score = Score.DAMAGE;
+        private AimCost placeAim = AimCost.NONE;
+        private AimCost useAim = AimCost.NONE;
+        private Lookahead<E> lookahead = Lookahead.none();
+        private IntSupplier placeDelay = () -> 0;
+        private IntSupplier useDelay = () -> 0;
+        private IntSupplier pendingTicks = () -> DEFAULT_PENDING_TICKS;
+        private SearchListener<E> listener;
         private boolean pruning = true;
         private final List<OptionFilter<E>> filters = new ArrayList<>();
         private EventBus bus;
@@ -846,6 +1049,57 @@ public final class ExplosiveSearch<E> {
             return self();
         }
 
+        /**
+         * What turning to look at a spot costs before you place there: options rank
+         * by score less this. {@link AimCost#NONE} unless set.
+         */
+        public B placeAimCost(AimCost cost) {
+            this.placeAim = Validate.notNull(cost, "cost");
+            return self();
+        }
+
+        /**
+         * Where targets, you and the protected will be when an explosion lands:
+         * damage is scored there. {@link Lookahead#none()}, where they are now,
+         * unless set; it only matters once a delay says how far ahead to look.
+         */
+        public B lookahead(Lookahead<E> lookahead) {
+            this.lookahead = Validate.notNull(lookahead, "lookahead");
+            return self();
+        }
+
+        /**
+         * Ticks from deciding to place until that explosive goes off on the server,
+         * read live: your ping, and for a crystal the wait to break it. 0, now,
+         * unless set.
+         */
+        public B placeDelay(IntSupplier ticks) {
+            this.placeDelay = Validate.notNull(ticks, "ticks");
+            return self();
+        }
+
+        /**
+         * How many ticks to wait for something you placed to show up before
+         * forgetting it, read live: about your ping, and a little more.
+         * {@link #DEFAULT_PENDING_TICKS} unless set.
+         */
+        public B pendingTicks(IntSupplier ticks) {
+            this.pendingTicks = Validate.notNull(ticks, "ticks");
+            return self();
+        }
+
+        /** Ticks from deciding to set one off until it goes off on the server, read live: your ping. 0 unless set. */
+        public B useDelay(IntSupplier ticks) {
+            this.useDelay = Validate.notNull(ticks, "ticks");
+            return self();
+        }
+
+        /** Optional: sees every exact estimate the search makes, and what became of it. */
+        public B listener(SearchListener<E> listener) {
+            this.listener = Validate.notNull(listener, "listener");
+            return self();
+        }
+
         /** Whether to skip spots that cannot win; on unless set. See the class notes. */
         public B pruning(boolean pruning) {
             this.pruning = pruning;
@@ -873,6 +1127,12 @@ public final class ExplosiveSearch<E> {
         /** Required, under whatever name the search gives it: how far away you set things off. */
         protected final B reachToUse(Reach reach) {
             this.useReach = Validate.notNull(reach, "reach");
+            return self();
+        }
+
+        /** What turning to look at an explosive costs before you set it off, under whatever name the search gives it. */
+        protected final B aimCostToUse(AimCost cost) {
+            this.useAim = Validate.notNull(cost, "cost");
             return self();
         }
 
@@ -921,6 +1181,11 @@ public final class ExplosiveSearch<E> {
         /** Required: how far away you set things off. */
         public Builder<E> useReach(Reach reach) {
             return reachToUse(reach);
+        }
+
+        /** What turning to look at an explosive costs before you set it off. {@link AimCost#NONE} unless set. */
+        public Builder<E> useAimCost(AimCost cost) {
+            return aimCostToUse(cost);
         }
 
         /** @throws IllegalStateException naming each required part not given */

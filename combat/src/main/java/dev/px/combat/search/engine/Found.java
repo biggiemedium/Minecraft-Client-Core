@@ -17,9 +17,9 @@ public final class Found<E, T> extends Option<E> {
 
     private final T subject;
 
-    Found(T subject, Vec3 origin, Tracked<? extends E> target, double damage, double selfDamage,
-          double score, Trigger trigger) {
-        super(origin, target, damage, selfDamage, score, trigger);
+    Found(T subject, Vec3 origin, Vec3 aim, Tracked<? extends E> target, double damage, double selfDamage,
+          double score, double aimCost, Trigger trigger, boolean own) {
+        super(origin, aim, target, damage, selfDamage, score, aimCost, trigger, own);
         this.subject = subject;
     }
 

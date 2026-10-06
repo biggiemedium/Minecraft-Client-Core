@@ -241,8 +241,7 @@ public final class HookTests {
         Checks.check("the booted client has hooks", hooks != null);
         List<String> tick = hooks.listenersOf(Hook.TICK);
         Checks.check("and knows what Core itself idles without ticks",
-                tick.contains("EntityService") && tick.contains("RotationService") && tick.contains("SimulationService")
-                        && tick.contains("LagService") && tick.contains("Core"));
+                tick.contains("EntityService") && tick.contains("RotationService") && tick.contains("LagService") && tick.contains("Core"));
         Checks.check("without keys, the module binds", hooks.listenersOf(Hook.KEY).contains("InputService"));
         Checks.check("without chat, the commands", hooks.listenersOf(Hook.CHAT_SEND).contains("CommandRegistry"));
         Checks.check("and without packets, the network", hooks.listenersOf(Hook.PACKET_IN).contains("NetworkService"));

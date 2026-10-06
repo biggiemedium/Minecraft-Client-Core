@@ -6,8 +6,6 @@ import dev.px.core.movement.simulation.CollisionSpace;
 import dev.px.core.movement.simulation.DriftMonitor;
 import dev.px.core.movement.simulation.PhysicsCalibration;
 import dev.px.core.movement.simulation.MotionState;
-import dev.px.core.movement.simulation.MotionTrack;
-import dev.px.core.movement.simulation.MotionTracker;
 import dev.px.core.movement.simulation.MovementInput;
 import dev.px.core.movement.simulation.Simulation;
 import dev.px.core.movement.simulation.SimulationService;
@@ -15,6 +13,7 @@ import dev.px.core.test.harness.Checks;
 import dev.px.core.test.harness.GridCollisionSpace;
 import dev.px.core.test.harness.RecordingLogger;
 import dev.px.core.test.harness.TestClient;
+import dev.px.core.util.math.MovementMath;
 import dev.px.core.util.math.PhysicsProfile;
 
 import java.util.List;
@@ -35,9 +34,7 @@ import java.util.List;
  * &mdash; sweeping the axes in the wrong order, clipping before moving, forgetting
  * the step retry.
  *
- * <p>The <b>tracker</b> is ordinary bookkeeping and is tested exactly: the ring
- * wraps, a velocity measured across a missed tick is halved rather than doubled,
- * and a track nobody updates is forgotten.
+ * <p>Where other entities will be is {@code PredictionTests}' business.
  */
 public final class SimulationTests {
 
@@ -53,7 +50,6 @@ public final class SimulationTests {
         jumping();
         surfaces();
         cost();
-        tracking();
         drift();
         calibration();
         service(client);
@@ -72,18 +68,34 @@ public final class SimulationTests {
      * movement-speed attribute, which is a different quantity with a similar name.
      * A test written against the model cannot catch the model being wrong.
      *
-     * <p>So the numbers below come from outside: 4.317, 5.612 and 1.295 blocks a
-     * second, and a jump of 1.2522 blocks. The tolerance is three percent, which
-     * is tight enough to catch a mixed-up constant and loose enough to leave room
-     * for the two percent the model is genuinely off by.
+     * <p>So the numbers below come from outside, the Minecraft Wiki (Walking,
+     * Sprinting, Player, Jumping, Entity): 4.317, 5.612, 1.295 and 7.127 blocks a
+     * second, ice, blue ice and slime, jumps of 1.2522 blocks and more with Jump
+     * Boost, and a terminal fall of 78.4 blocks a second. The tolerance is a tenth of a percent.
+     * It was three, to leave room for a 2.05% the model was off by horizontally;
+     * that turned out to be a missing rule, the game scaling the keys by 0.98 each
+     * tick, and with it in, the figures land within a hundredth of a percent.
      */
     private static void accuracy() {
         Checks.checkEquals("walking reaches the speed Minecraft walks at (blocks/second)",
-                4.317f, (float) blocksPerSecond(MovementInput.forward(0f)), 3f);
+                4.317f, (float) blocksPerSecond(MovementInput.forward(0f)), 0.1f);
         Checks.checkEquals("sprinting reaches the speed it sprints at",
-                5.612f, (float) blocksPerSecond(MovementInput.forward(0f).withSprint(true)), 3f);
+                5.612f, (float) blocksPerSecond(MovementInput.forward(0f).withSprint(true)), 0.1f);
         Checks.checkEquals("sneaking reaches the speed it sneaks at",
-                1.295f, (float) blocksPerSecond(MovementInput.forward(0f).withSneak(true)), 3f);
+                1.295f, (float) blocksPerSecond(MovementInput.forward(0f).withSneak(true)), 0.1f);
+        // Averaged over a minute of jumps, so where in its arc the last one ends does not matter. It ran
+        // at 6.09 while the keys accelerated at the air rate on the tick of each jump; the game uses the
+        // ground rate there.
+        Checks.checkEquals("sprint-jumping reaches the speed it sprint-jumps at",
+                7.127f, (float) averageBlocksPerSecond(MovementInput.forward(0f).withSprint(true).withJump(true)), 0.1f);
+
+        // minecraft.wiki/w/Walking: walking on slippery blocks, whose slipperiness is the world's to report.
+        Checks.checkEquals("walking on ice reaches the speed Minecraft does (slipperiness 0.98)",
+                4.157f, (float) blocksPerSecond(MovementInput.forward(0f), 0.98d), 0.1f);
+        Checks.checkEquals("on blue ice (0.989)",
+                4.376f, (float) blocksPerSecond(MovementInput.forward(0f), 0.989d), 0.1f);
+        Checks.checkEquals("on slime (0.8)",
+                3.040f, (float) blocksPerSecond(MovementInput.forward(0f), 0.8d), 0.1f);
 
         // The vertical axis is exact: these fall straight out of gravity, drag and
         // the jump constant applied in the right order, and nothing was tuned.
@@ -96,6 +108,18 @@ public final class SimulationTests {
             peak = Math.max(peak, state.getPosition().getY());
         }
         Checks.checkEquals("a jump reaches the height Minecraft jumps", 1.2522f, (float) peak);
+        // minecraft.wiki/w/Jumping
+        Checks.checkEquals("with Jump Boost I", 1.8361f,
+                (float) jumpPeak(PhysicsProfile.vanilla().withJumpVelocity(MovementMath.jumpVelocity(PhysicsProfile.vanilla(), 1))), 0.01f);
+        Checks.checkEquals("with Jump Boost II", 2.5168f,
+                (float) jumpPeak(PhysicsProfile.vanilla().withJumpVelocity(MovementMath.jumpVelocity(PhysicsProfile.vanilla(), 2))), 0.01f);
+        // minecraft.wiki/w/Entity#Motion
+        MotionState falling = MotionState.of(Vec3.of(0d, 10_000d, 0d), Vec3.ZERO, false);
+        for (int tick = 0; tick < 2000; tick++) {
+            falling = Simulation.step(PhysicsProfile.vanilla(), falling, MovementInput.none(0f), CollisionSpace.empty());
+        }
+        Checks.checkEquals("and a long fall ends at the terminal velocity it does (blocks/second)",
+                78.4f, (float) (-falling.getVelocity().getY() * 20d), 0.01f);
 
         Checks.checkEquals("and the first tick of a fall is the exact vanilla figure", -0.0784f,
                 (float) Simulation.step(MotionState.at(Vec3.of(0.5d, 64d, 0.5d)).withOnGround(false),
@@ -108,11 +132,47 @@ public final class SimulationTests {
                         - PhysicsProfile.vanilla().getMoveSpeedAttribute()) > 0.1d);
     }
 
+    /** @return travel in blocks per second averaged over a minute, after ten seconds to settle. */
+    private static double averageBlocksPerSecond(MovementInput input) {
+        GridCollisionSpace world = new GridCollisionSpace().floor(0d, -16, 16);
+        MotionState state = MotionState.at(Vec3.of(0.5d, 0d, 0.5d));
+        for (int tick = 0; tick < 200; tick++) {
+            state = Simulation.step(state, input, world);
+            state = state.withPosition(Vec3.of(0.5d, state.getPosition().getY(), 0.5d));   // stay on the floor
+        }
+        double travelled = 0d;
+        for (int tick = 0; tick < 1200; tick++) {
+            MotionState next = Simulation.step(state, input, world);
+            travelled += next.getPosition().getZ() - state.getPosition().getZ();
+            state = next.withPosition(Vec3.of(0.5d, next.getPosition().getY(), 0.5d));
+        }
+        return travelled / 60d;
+    }
+
+    /** @return the highest a standing jump reaches under {@code profile} */
+    private static double jumpPeak(PhysicsProfile profile) {
+        GridCollisionSpace world = new GridCollisionSpace().floor(0d, -4, 4);
+        MotionState state = Simulation.step(profile, MotionState.at(Vec3.of(0.5d, 0d, 0.5d)),
+                MovementInput.none(0f).withJump(true), world);
+        double peak = state.getPosition().getY();
+        for (int tick = 0; tick < 60 && !state.isOnGround(); tick++) {
+            state = Simulation.step(profile, state, MovementInput.none(0f), world);
+            peak = Math.max(peak, state.getPosition().getY());
+        }
+        return peak;
+    }
+
     /** @return steady-state travel in blocks per second, measured after acceleration settles. */
     private static double blocksPerSecond(MovementInput input) {
+        return blocksPerSecond(input, 0.6d);
+    }
+
+    /** @return steady-state travel in blocks per second on blocks this slippery. */
+    private static double blocksPerSecond(MovementInput input, double slipperiness) {
         GridCollisionSpace world = new GridCollisionSpace().floor(0d, -256, 256);
+        world.setSlipperiness(slipperiness);
         MotionState state = MotionState.at(Vec3.of(0.5d, 0d, 0.5d));
-        for (int tick = 0; tick < 60; tick++) {
+        for (int tick = 0; tick < 200; tick++) {
             state = Simulation.step(state, input, world);
         }
         double from = state.getPosition().getZ();
@@ -424,91 +484,15 @@ public final class SimulationTests {
                 () -> Simulation.simulate(start, input, -1, world));
     }
 
-    // ------------------------------------------------------------- tracking
-
-    private static void tracking() {
-        MotionTracker tracker = new MotionTracker(4);
-        Object target = "player-7";
-
-        Checks.check("an unknown key has no track", tracker.get(target) == null);
-        Checks.check("and is not tracked", !tracker.isTracked(target));
-
-        tracker.record(target, Vec3.of(0d, 64d, 0d), true, 1L);
-        tracker.record(target, Vec3.of(0d, 64d, 1d), true, 2L);
-
-        MotionTrack track = tracker.get(target);
-        Checks.checkEquals("the newest position is the one read back",
-                Vec3.of(0d, 64d, 1d), track.getPosition());
-        Checks.checkEquals("velocity is measured from the last two samples",
-                Vec3.of(0d, 0d, 1d), track.getVelocity());
-        Checks.checkEquals("and extends in a straight line",
-                Vec3.of(0d, 64d, 4d), track.extrapolate(3));
-        Checks.check("the ground flag comes along", track.isOnGround());
-        Checks.checkEquals("as does the tick it was taken on", 2L, track.getLastTick());
-
-        // A sample missed to lag must average over the gap, not report double speed.
-        tracker.record(target, Vec3.of(0d, 64d, 3d), true, 4L);
-        Checks.checkEquals("a missed tick averages over the gap rather than doubling",
-                Vec3.of(0d, 0d, 1d), track.getVelocity());
-
-        // The ring is bounded: the oldest sample falls off rather than growing.
-        for (int i = 0; i < 10; i++) {
-            tracker.record(target, Vec3.of(i, 64d, 0d), false, 10L + i);
-        }
-        Checks.checkEquals("history is capped at the configured size", 4, track.getSampleCount());
-        Checks.check("so asking past the end gets nothing", track.positionAgo(4) == null);
-        Checks.check("and asking backwards gets nothing", track.positionAgo(-1) == null);
-        Checks.checkEquals("while the samples it did keep are the newest",
-                Vec3.of(9d, 64d, 0d), track.positionAgo(0));
-        Checks.checkEquals("in order", Vec3.of(8d, 64d, 0d), track.positionAgo(1));
-
-        Checks.check("a track converts to a state a simulation can step",
-                track.toState() != null);
-        Checks.checkEquals("a single sample has no velocity yet", Vec3.ZERO,
-                freshTrack().getVelocity());
-
-        Checks.checkThrows("a history too short to hold a velocity is rejected",
-                IllegalArgumentException.class, () -> new MotionTracker(1));
-
-        // Eviction, which is what stops every entity ever seen being remembered.
-        // A tracker of its own, so the count is not whatever earlier checks left.
-        MotionTracker ageing = new MotionTracker(4);
-        ageing.record("stale", Vec3.ZERO, true, 1L);
-        ageing.record("fresh", Vec3.ZERO, true, 100L);
-        Checks.checkEquals("both are tracked", 2, ageing.size());
-        Checks.checkEquals("eviction drops only the stale one", 1, ageing.evictBefore(50L));
-        Checks.check("the fresh one survives", ageing.isTracked("fresh"));
-        Checks.check("the stale one does not", !ageing.isTracked("stale"));
-
-        Checks.check("a track can be forgotten by hand", ageing.forget("fresh"));
-        Checks.check("and forgetting an unknown key says so", !ageing.forget("nobody"));
-    }
-
-    private static MotionTrack freshTrack() {
-        MotionTracker tracker = new MotionTracker(4);
-        tracker.record("one", Vec3.ZERO, true, 1L);
-        return tracker.get("one");
-    }
-
     // -------------------------------------------------------------- service
 
     private static void service(TestClient client) {
         RecordingLogger logger = new RecordingLogger();
         SimulationService simulation = new SimulationService(logger, new CoreEventBus(logger));
-        simulation.setForgetAfterTicks(3);
         simulation.start();
 
         GridCollisionSpace world = new GridCollisionSpace().floor(0d, -16, 16);
         simulation.setCollisionSpace(world);
-
-        simulation.beginTick();
-        simulation.record("a", Vec3.of(0d, 64d, 0d), true);
-        simulation.beginTick();
-        simulation.record("a", Vec3.of(0d, 64d, 1d), true);
-
-        Checks.checkEquals("the service stamps samples with its own clock", 2L, simulation.getTick());
-        Checks.checkEquals("and predicts from them", Vec3.of(0d, 64d, 3d), simulation.predict("a", 2));
-        Checks.check("an untracked key predicts nothing", simulation.predict("nobody", 2) == null);
 
         MotionState landing = simulation.landing(
                 MotionState.at(Vec3.of(0.5d, 8d, 0.5d)).withOnGround(false),
@@ -516,24 +500,11 @@ public final class SimulationTests {
         Checks.check("the service simulates against the installed world", landing != null);
         Checks.checkEquals("landing on it", 0f, (float) landing.getPosition().getY());
 
-        MotionState coasted = simulation.coast("a", 5);
-        Checks.check("a tracked thing can be coasted forward with physics", coasted != null);
-        Checks.check("falling as it goes, since nothing holds it up at y 64",
-                coasted.getPosition().getY() < 64d);
-        Checks.check("coasting an untracked key gives nothing", simulation.coast("nobody", 5) == null);
-
-        // Tracks are dropped once nobody has updated them for long enough.
-        for (int tick = 0; tick < 5; tick++) {
-            simulation.beginTick();
-        }
-        Checks.check("a track nobody updates is eventually forgotten", !simulation.isTracked("a"));
-
         simulation.stop();
 
         // ---- and the one Core wires in -------------------------------------
         SimulationService wired = client.getCore().getSimulationService();
         Checks.check("Core wires a simulation service in", wired != null);
-        Checks.check("with a tracker ready to use", wired.getTracker() != null);
         Checks.check("and an empty world rather than a null one",
                 wired.getCollisionSpace() != null);
         Checks.check("so simulating before a world is installed still answers",

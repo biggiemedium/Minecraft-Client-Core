@@ -11,12 +11,17 @@ import dev.px.combat.explosion.rule.Mitigation;
 import dev.px.combat.explosion.rule.SampleGrid;
 import dev.px.combat.monitor.Vitals;
 import dev.px.combat.search.CrystalSearch;
+import dev.px.combat.search.engine.Judgement;
 import dev.px.combat.search.engine.SearchStats;
 import dev.px.combat.search.option.BreakOption;
 import dev.px.combat.search.option.Harm;
 import dev.px.combat.search.option.PlaceOption;
 import dev.px.combat.search.option.Proposal;
 import dev.px.combat.search.option.Trigger;
+import dev.px.combat.place.Clicks;
+import dev.px.combat.place.FaceRule;
+import dev.px.combat.search.rule.AimCost;
+import dev.px.combat.search.rule.Lookahead;
 import dev.px.combat.search.rule.OptionFilter;
 import dev.px.combat.search.rule.Reach;
 import dev.px.combat.search.rule.ReachPoint;
@@ -32,6 +37,7 @@ import dev.px.core.entity.Tracked;
 import dev.px.core.event.Stage;
 import dev.px.core.event.bus.CoreEventBus;
 import dev.px.core.event.impl.TickEvent;
+import dev.px.core.math.Vec2;
 import dev.px.core.math.Vec3;
 import dev.px.core.target.TargetSelector;
 import dev.px.core.target.TargetService;
@@ -49,8 +55,8 @@ import java.util.function.Function;
 
 /**
  * The crystal search: placing and breaking, the best few places, every
- * threshold, protecting friends, your own filters, reach, timing, and branch and
- * bound checked against a brute-force search of the same world.
+ * threshold, protecting friends, your own filters, aiming, reach, timing, and
+ * branch and bound checked against a brute-force search of the same world.
  *
  * <p>The world is a floor of crystal bases with you, an enemy, and crystals on
  * it, behind Core's own entity and targeting services. The version profile is the
@@ -86,6 +92,16 @@ public final class SearchTests {
         timing();
         spawning();
         scoring();
+        aiming();
+        aimingBruteForce();
+        aimingToBreak();
+        lookingAhead();
+        lookingAheadWithPrediction();
+        pendingPlacements();
+        planning();
+        ownCrystals();
+        listening();
+        strictPlacement();
         lifecycle();
     }
 
@@ -535,13 +551,13 @@ public final class SearchTests {
         return a.getScore() == b.getScore() && a.getSelfDamage() == b.getSelfDamage() && a.getDamage() == b.getDamage();
     }
 
-    /** Equal scores in the same order; spots that tie may come in either order, so only the numbers count. */
+    /** Equal ranks in the same order; spots that tie may come in either order, so only the numbers count. */
     private static boolean sameRanking(List<PlaceOption<Fighter>> a, List<PlaceOption<Fighter>> b) {
         if (a.size() != b.size()) {
             return false;
         }
         for (int i = 0; i < a.size(); i++) {
-            if (a.get(i).getScore() != b.get(i).getScore() || a.get(i).getSelfDamage() != b.get(i).getSelfDamage()) {
+            if (a.get(i).getRank() != b.get(i).getRank() || a.get(i).getSelfDamage() != b.get(i).getSelfDamage()) {
                 return false;
             }
         }
@@ -651,6 +667,438 @@ public final class SearchTests {
         PlaceOption<Fighter> careful = arena.search(b -> b.score(Score.balanced(2))).findPlace();
         Checks.check("a balanced score trades damage for safety",
                 careful.getSelfDamage() <= greedy.getSelfDamage() && careful.getDamage() <= greedy.getDamage());
+    }
+
+    // ---------------------------------------------------------------- aiming
+
+    private static void aiming() {
+        Arena arena = new Arena();
+        CrystalSearch<Fighter> unaimed = arena.search(b -> b);
+        PlaceOption<Fighter> free = unaimed.findPlace();
+        Checks.check("every place says where to look: the centre of the base's top face",
+                free.getAim().equals(Vec3.of(free.getX() + 0.5, free.getY() + 1, free.getZ() + 0.5)));
+        Checks.check("and without an aim cost, aiming costs nothing and the rank is the score",
+                free.getAimCost() == 0d && free.getRank() == free.getScore());
+
+        // Turning anywhere east of you is out of the question: only the west is left.
+        AimCost westOnly = (eye, at) -> at.getX() < eye.getX() ? 0d : Double.POSITIVE_INFINITY;
+        CrystalSearch<Fighter> west = arena.search(b -> b.placeAimCost(westOnly));
+        PlaceOption<Fighter> behind = west.findPlace();
+        Checks.check("a spot you cannot turn to is never chosen, however strong (" + behind + " vs " + free + ")",
+                behind != null && behind.getAim().getX() < arena.eye().getX() && behind.getDamage() < free.getDamage());
+        SearchStats stats = west.getLastPlaceStats();
+        Checks.check("and is dropped before anything is bounded or raycast (" + stats + ")",
+                stats.getUnaimable() > 0 && stats.getBounds() < unaimed.getLastPlaceStats().getBounds());
+        Checks.check("being the best of what is left",
+                same(behind, arena.search(b -> b.placeAimCost(westOnly).pruning(false)).findPlace()));
+        Checks.check("and when you can turn nowhere, nothing is found",
+                arena.search(b -> b.placeAimCost((eye, at) -> Double.NaN)).findPlace() == null);
+
+        // A trade: turning anywhere but one weaker spot costs just under, then just over, the best's lead on it.
+        List<PlaceOption<Fighter>> ten = arena.search(b -> b).findPlaces(10);
+        PlaceOption<Fighter> weaker = null;
+        for (PlaceOption<Fighter> option : ten) {
+            if (weaker == null && option.getScore() < ten.get(0).getScore()) {
+                weaker = option;
+            }
+        }
+        double lead = ten.get(0).getScore() - weaker.getScore();
+        Vec3 facing = weaker.getAim();
+        PlaceOption<Fighter> worthIt = arena.search(b -> b.placeAimCost(
+                (eye, at) -> at.equals(facing) ? 0d : lead / 2)).findPlace();
+        Checks.check("turning that costs less than the best's lead still leaves the best first (lead " + lead + ")",
+                lead > 0 && worthIt.getScore() == ten.get(0).getScore() && worthIt.getAimCost() == lead / 2
+                        && worthIt.getRank() == worthIt.getScore() - lead / 2);
+        PlaceOption<Fighter> notWorthIt = arena.search(b -> b.placeAimCost(
+                (eye, at) -> at.equals(facing) ? 0d : lead * 2)).findPlace();
+        Checks.check("turning that costs more leaves the spot you face",
+                notWorthIt.getAim().equals(facing) && notWorthIt.getRank() == weaker.getScore());
+
+        // A bonus: the tenth best, already being turned toward, beats them all.
+        PlaceOption<Fighter> tenth = ten.get(9);
+        double bonus = ten.get(0).getScore() - tenth.getScore() + 1;
+        CrystalSearch<Fighter> sticky = arena.search(b -> b.placeAimCost(
+                (eye, at) -> at.equals(tenth.getAim()) ? -bonus : 0d));
+        PlaceOption<Fighter> kept = sticky.findPlace();
+        Checks.check("a negative cost is a bonus: the spot you are turning to stays first",
+                kept.getAim().equals(tenth.getAim()) && kept.getRank() == tenth.getScore() + bonus);
+        List<PlaceOption<Fighter>> ranked = sticky.findPlaces(3);
+        Checks.check("and the best few are ranked by rank, not score (" + ranked + ")",
+                ranked.get(0).getScore() < ranked.get(1).getScore() && !ranked.get(1).beats(ranked.get(0))
+                        && !ranked.get(2).beats(ranked.get(1)));
+
+        // Filters see where to look, and what it costs.
+        List<Vec3> seen = new ArrayList<>();
+        PlaceOption<Fighter> filtered = arena.search(b -> b.placeAimCost((eye, at) -> 1).filter(p -> {
+            seen.add(p.getAim());
+            return p.getAimCost() == 1 && p.getRank() == p.getScore() - 1;
+        })).findPlace();
+        Checks.check("a filter sees the aim and its cost",
+                filtered != null && seen.contains(filtered.getAim()) && !seen.contains(null));
+    }
+
+    private static void aimingBruteForce() {
+        Random random = new Random(23);
+        int agree = 0;
+        int pruned = 0;
+        int unaimable = 0;
+        int layouts = 40;
+        for (int layout = 0; layout < layouts; layout++) {
+            Arena arena = randomArena(random);
+            Vec2 looking = Vec2.rotation(random.nextFloat() * 360 - 180, random.nextFloat() * 90 - 10);
+            // Steep enough, some layouts, that a strong spot behind a wall costs more to turn to than it leads by.
+            double perDegree = layout % 2 == 0 ? 0.02 + random.nextDouble() * 0.2 : 0.2 + random.nextDouble() * 0.8;
+            double maxDegrees = 60 + random.nextDouble() * 90;
+            AimCost angle = AimCost.angle(() -> looking, () -> perDegree, () -> maxDegrees);
+            Map<Vec3, Double> bonuses = new HashMap<>();           // a few spots you are already turning toward
+            for (int i = 0; i < 5; i++) {
+                bonuses.put(Vec3.of(random.nextInt(11) - 5 + 0.5, 1, random.nextInt(11) - 5 + 0.5), random.nextDouble() * 15);
+            }
+            AimCost aim = (eye, at) -> angle.cost(eye, at) - bonuses.getOrDefault(at, 0d);
+            Thresholds<Fighter> limits = Thresholds.<Fighter>builder().minDamage(() -> 4).maxSelfDamage(() -> 30).build();
+            CrystalSearch<Fighter> fast = arena.search(b -> b.thresholds(limits).placeAimCost(aim));
+            CrystalSearch<Fighter> slow = arena.search(b -> b.thresholds(limits).placeAimCost(aim).pruning(false));
+            List<PlaceOption<Fighter>> a = fast.findPlaces(4);
+            List<PlaceOption<Fighter>> everything = slow.findPlaces(10000);
+            List<PlaceOption<Fighter>> b = everything.subList(0, Math.min(4, everything.size()));
+            List<PlaceOption<Fighter>> one = fast.findPlaces(1);
+            if (sameRanking(a, b) && sameRanking(one, everything.subList(0, Math.min(1, everything.size())))) {
+                agree++;
+            }
+            pruned += fast.getLastPlaceStats().getPruned();
+            unaimable += fast.getLastPlaceStats().getUnaimable();
+        }
+        Checks.checkEquals("with aim costs and bonuses, the best one and best four by branch and bound are those of "
+                + "every option, in all 40 layouts", layouts, agree);
+        Checks.check("while still skipping spots (" + pruned + " pruned, " + unaimable + " out of turning range)",
+                pruned > layouts * 3 && unaimable > 0);
+
+        AimCost ahead = AimCost.angle(() -> Vec2.rotation(0, 0), () -> 2, () -> 90);
+        Vec3 origin = Vec3.of(0, 0, 0);
+        Checks.check("an angle cost is free straight ahead",
+                ahead.cost(origin, Vec3.of(0, 0, 5)) < 1e-4);
+        Checks.check("costs per degree off it", Math.abs(ahead.cost(origin, Vec3.of(5, 0, 5)) - 90) < 1e-3);
+        Checks.check("and is out of the question behind you",
+                ahead.cost(origin, Vec3.of(0, 0, -5)) == Double.POSITIVE_INFINITY);
+    }
+
+    private static void aimingToBreak() {
+        Arena arena = new Arena();
+        Crystal strong = arena.crystal(2, 0, 0);
+        Crystal weak = arena.crystal(4, 0, 1);
+        arena.refresh();
+        BreakOption<Fighter> free = arena.search(b -> b).findBreak();
+        Checks.check("a crystal to break is aimed at its centre",
+                free.getCrystal().get() == strong && free.getAim().equals(free.getCrystal().getCenter()));
+
+        Vec3 strongCentre = arena.crystals.get(strong).getCenter();
+        AimCost notThatOne = (eye, at) -> at.equals(strongCentre) ? Double.POSITIVE_INFINITY : 0d;
+        CrystalSearch<Fighter> search = arena.search(b -> b.breakAimCost(notThatOne));
+        BreakOption<Fighter> other = search.findBreak();
+        Checks.check("one you cannot turn to is left for one you can",
+                other != null && other.getCrystal().get() == weak && search.getLastBreakStats().getUnaimable() == 1);
+        Checks.check("the place aim cost never touches breaking, nor the reverse",
+                arena.search(b -> b.placeAimCost(notThatOne)).findBreak().getCrystal().get() == strong
+                        && arena.search(b -> b.breakAimCost((eye, at) -> Double.NaN)).findPlace() != null);
+
+        Crystal spawned = new Crystal(2.5, 1, 1.5);
+        CrystalSearch<Fighter> blind = arena.search(b -> b.breakAimCost((eye, at) -> Double.POSITIVE_INFINITY));
+        Checks.check("and one from its spawn packet you cannot turn to is not broken on spawn",
+                blind.spawned(spawned) == null && blind.getLastBreakStats().getUnaimable() == 1);
+    }
+
+    // ----------------------------------------------------------- lookahead
+
+    private static void lookingAhead() {
+        Arena arena = new Arena();
+        PlaceOption<Fighter> now = arena.search(b -> b).findPlace();
+
+        // A lookahead that says the enemy will be three blocks further east, and everyone else where they are.
+        int[] asked = { 0 };
+        Lookahead<Fighter> east = (entity, ticks) -> {
+            asked[0]++;
+            return entity.get() == arena.enemy ? entity.projected(entity.getPosition().add(3d, 0d, 0d)) : entity;
+        };
+        PlaceOption<Fighter> idle = arena.search(b -> b.lookahead(east)).findPlace();
+        Checks.check("a lookahead with no delay is never asked, and changes nothing",
+                asked[0] == 0 && same(idle, now));
+
+        CrystalSearch<Fighter> ahead = arena.search(b -> b.lookahead(east).placeDelay(() -> 4));
+        PlaceOption<Fighter> there = ahead.findPlace();
+        Tracked<Fighter> enemy = arena.players.get(arena.enemy);
+        Tracked<Fighter> projected = enemy.projected(enemy.getPosition().add(3d, 0d, 0d));
+        Checks.check("with a delay, damage is scored where the enemy will be (" + there + " vs " + now + ")",
+                there.getDamage() == arena.rules.damage(there.getX(), there.getY(), there.getZ(), projected)
+                        && there.getDamage() < now.getDamage());
+        Checks.check("against the enemy itself, not a stand-in",
+                there.getTarget() == enemy && there.getTarget().isTracked());
+        Checks.check("asked once for each entity a search weighs", asked[0] > 0 && asked[0] <= 3);
+
+        // You, looked ahead to somewhere safe: the same spots hurt you less.
+        Lookahead<Fighter> retreat = (entity, ticks) -> entity.get() == arena.self
+                ? entity.projected(entity.getPosition().add(-20d, 0d, 0d)) : entity;
+        PlaceOption<Fighter> brave = arena.search(b -> b.lookahead(retreat).placeDelay(() -> 4)).findPlace();
+        Checks.check("your own damage is scored where you will be (" + brave.getSelfDamage() + " vs "
+                + now.getSelfDamage() + ")", brave.getSelfDamage() < now.getSelfDamage());
+
+        // A friend walking into the blast is protected where they will be, not where they are.
+        Fighter friend = arena.world.add(new Fighter(-15.5, 1, 0.5));
+        arena.refresh();
+        TargetSelector<Fighter> friends = TargetSelector.from(arena.players).range(40).where(f -> f == friend).build();
+        Lookahead<Fighter> arriving = (entity, ticks) -> entity.get() == friend
+                ? entity.projected(Vec3.of(3.5d, 1d, 2.5d)) : entity;
+        Thresholds<Fighter> gentle = Thresholds.<Fighter>builder().maxProtectedDamage(() -> 5).build();
+        PlaceOption<Fighter> unaware = arena.search(b -> b.protect(friends).thresholds(gentle)).findPlace();
+        PlaceOption<Fighter> aware = arena.search(b -> b.protect(friends).thresholds(gentle)
+                .lookahead(arriving).placeDelay(() -> 4)).findPlace();
+        Checks.check("a friend about to walk into the blast is spared: next to the enemy, nothing is worth it ("
+                + aware + " vs " + unaware + ")", unaware != null && aware == null);
+
+        // Breaking looks ahead by its own delay.
+        Arena crystals = new Arena();
+        crystals.crystal(-2, 0, 0);
+        crystals.crystal(4, 0, 0);
+        crystals.refresh();
+        // The enemy, by the crystal at 4 now, will be past you by the one at -2.
+        Lookahead<Fighter> away = (entity, ticks) -> entity.get() == crystals.enemy
+                ? entity.projected(entity.getPosition().add(-4.5d, 0d, 0d)) : entity;
+        BreakOption<Fighter> nowBreak = crystals.search(b -> b.lookahead(away)).findBreak();
+        BreakOption<Fighter> laterBreak = crystals.search(b -> b.lookahead(away).useDelay(() -> 3)).findBreak();
+        Checks.check("breaking looks ahead by the use delay: the crystal by where they will be is chosen ("
+                        + nowBreak + " now, " + laterBreak + " ahead)",
+                nowBreak.getCrystal().getX() > 4d && laterBreak.getCrystal().getX() < 0d);
+    }
+
+    private static void lookingAheadWithPrediction() {
+        Arena arena = new Arena();
+        dev.px.core.movement.simulation.SimulationService simulation =
+                new dev.px.core.movement.simulation.SimulationService(new RecordingLogger(),
+                        new CoreEventBus(new RecordingLogger()));
+        simulation.setCollisionSpace(region -> {
+            List<dev.px.core.math.Box> boxes = new ArrayList<>();
+            for (int x = (int) Math.floor(region.getMinX()); x <= (int) Math.floor(region.getMaxX()); x++) {
+                for (int y = (int) Math.floor(region.getMinY()); y <= (int) Math.floor(region.getMaxY()); y++) {
+                    for (int z = (int) Math.floor(region.getMinZ()); z <= (int) Math.floor(region.getMaxZ()); z++) {
+                        if (!arena.blocks.isClear(x, y, z)) {
+                            boxes.add(dev.px.core.math.Box.block(x, y, z));
+                        }
+                    }
+                }
+            }
+            return boxes;
+        });
+        dev.px.core.movement.prediction.PredictionService prediction =
+                new dev.px.core.movement.prediction.PredictionService(simulation);
+        // The enemy glides east at a steady 0.15 a tick for a second and a half: a strafe, as far as the rules go.
+        for (int tick = 0; tick < 30; tick++) {
+            arena.enemy.x += 0.15d;
+            arena.refresh();
+        }
+        Tracked<Fighter> enemy = arena.players.get(arena.enemy);
+        Tracked<? extends Fighter> soon = Lookahead.<Fighter>predicted(prediction).at(enemy, 6);
+        Checks.check("Core's prediction can be the lookahead: six ticks on, it is 0.9 further east ("
+                        + soon.getPosition() + " from " + enemy.getPosition() + ")",
+                Math.abs(soon.getX() - (enemy.getX() + 0.9d)) < 1e-6 && !soon.isTracked());
+
+        // Somebody it cannot make sense of stays where they are.
+        Random random = new Random(3);
+        for (int tick = 0; tick < 30; tick++) {
+            arena.enemy.x += random.nextDouble() * 2 - 1;
+            arena.enemy.z += random.nextDouble() * 2 - 1;
+            arena.refresh();
+        }
+        enemy = arena.players.get(arena.enemy);
+        Checks.check("while an unreliable prediction leaves them where they are",
+                Lookahead.<Fighter>predicted(prediction).at(enemy, 6) == enemy
+                        && Lookahead.<Fighter>predicted(prediction, true).at(enemy, 6) != enemy);
+        Checks.check("and a straight line is a straight line", Math.abs(Lookahead.<Fighter>extrapolated().at(enemy, 4)
+                .getX() - enemy.extrapolate(4).getX()) < 1e-12);
+    }
+
+    // ------------------------------------------------- place, then break
+
+    private static void pendingPlacements() {
+        Arena arena = new Arena();
+        CrystalSearch<Fighter> search = arena.search(b -> b.pendingTicks(() -> 3));
+        PlaceOption<Fighter> first = search.findPlace();
+        search.placed(first);
+        PlaceOption<Fighter> second = search.findPlace();
+        Checks.check("a crystal placed and not yet shown keeps the next placement off its base (" + first + ", then "
+                        + second + ")",
+                second != null && !(second.getX() == first.getX() && second.getZ() == first.getZ())
+                        && search.getLastPlaceStats().getPending() > 0);
+        Checks.check("and off every base its crystal would stand in the way of",
+                Math.abs(second.getX() - first.getX()) >= 2 || Math.abs(second.getZ() - first.getZ()) >= 2);
+        Checks.checkEquals("one placement is waiting", 1, search.getLog().getPendingCount());
+
+        for (int i = 0; i < 3; i++) {
+            search.tick();
+        }
+        PlaceOption<Fighter> again = search.findPlace();
+        Checks.check("until its wait runs out: it never showed up, so the base is free again",
+                search.getLog().getPendingCount() == 0 && again.getX() == first.getX() && again.getZ() == first.getZ());
+
+        CrystalSearch<Fighter> other = arena.search(b -> b.log(search.getLog()));
+        search.placed(first);
+        PlaceOption<Fighter> shared = other.findPlace();
+        Checks.check("searches sharing a log share what is waiting",
+                !(shared.getX() == first.getX() && shared.getZ() == first.getZ()));
+    }
+
+    private static void planning() {
+        Arena arena = new Arena();
+        CrystalSearch<Fighter> search = arena.search(b -> b);
+        List<PlaceOption<Fighter>> plan = search.planPlaces(3);
+        PlaceOption<Fighter> best = search.findPlace();
+        boolean apart = true;
+        for (int i = 0; i < plan.size(); i++) {
+            for (int j = 0; j < plan.size(); j++) {
+                if (i != j) {
+                    PlaceOption<Fighter> a = plan.get(i);
+                    PlaceOption<Fighter> b = plan.get(j);
+                    dev.px.core.math.Box crystal = arena.rules.box(a.getX(), a.getY(), a.getZ());
+                    dev.px.core.math.Box column = dev.px.core.math.Box.of(b.getX(), b.getY() + 1, b.getZ(),
+                            b.getX() + 1, b.getY() + 3, b.getZ() + 1);
+                    apart &= !crystal.intersects(column);
+                }
+            }
+        }
+        Checks.check("a plan of three places, none in another's way (" + plan + ")",
+                plan.size() == 3 && apart);
+        Checks.check("the first is the best place there is", same(plan.get(0), best)
+                && plan.get(0).getX() == best.getX() && plan.get(0).getZ() == best.getZ());
+        Checks.check("each after it the best of what is left, so no better than the one before",
+                !plan.get(1).beats(plan.get(0)) && !plan.get(2).beats(plan.get(1)));
+        Checks.check("planning leaves nothing waiting: only placing does", search.getLog().getPendingCount() == 0);
+        Thresholds<Fighter> strict = Thresholds.<Fighter>builder().minDamage(() -> 1000).build();
+        Checks.check("and where nothing is worth it, the plan is empty",
+                arena.search(b -> b.thresholds(strict)).planPlaces(2).isEmpty());
+    }
+
+    private static void ownCrystals() {
+        Arena arena = new Arena();
+        CrystalSearch<Fighter> search = arena.search(b -> b);
+        PlaceOption<Fighter> spot = search.findPlace();
+        search.placed(spot);
+        Crystal mine = arena.crystal(spot.getX(), spot.getY(), spot.getZ());
+        Crystal theirs = arena.crystal(-2, 0, 3);
+        arena.refresh();
+        BreakOption<Fighter> hit = search.findBreak();
+        Checks.check("a crystal that shows up where you placed one is yours (" + hit + ")",
+                hit != null && hit.getCrystal().get() == mine && hit.isOwn());
+        Checks.checkEquals("and is no longer waited for", 0, search.getLog().getPendingCount());
+        Checks.check("one that someone else placed is not",
+                !search.getLog().isOwn(theirs) && search.getLog().isOwn(mine));
+
+        Arena spawning = new Arena();
+        CrystalSearch<Fighter> instant = spawning.search(b -> b);
+        PlaceOption<Fighter> at = instant.findPlace();
+        instant.placed(at);
+        Crystal fresh = new Crystal(at.getX() + 0.5, at.getY() + 1, at.getZ() + 0.5);
+        BreakOption<Fighter> now = instant.spawned(fresh);
+        Checks.check("from its spawn packet too, before the world lists it", now != null && now.isOwn());
+        Checks.check("and a place to put one is never yours", !instant.findPlace().isOwn());
+    }
+
+    private static void listening() {
+        Arena arena = new Arena();
+        List<Judgement<Fighter>> heard = new ArrayList<>();
+        CrystalSearch<Fighter> search = arena.search(b -> b.listener(heard::add));
+        PlaceOption<Fighter> best = search.findPlace();
+        boolean chosenHeard = false;
+        for (Judgement<Fighter> judgement : heard) {
+            chosenHeard |= judgement.getVerdict() == Judgement.Verdict.PASSED && judgement.isPlacing()
+                    && judgement.getDamage() == best.getDamage();
+        }
+        Checks.checkEquals("a listener hears every estimate the search paid for", search.getLastPlaceStats().getEvaluated(),
+                heard.size());
+        Checks.check("the option it chose among them, passed (" + heard.size() + " heard)", chosenHeard);
+
+        // After a stronger crystal this tick, a weaker one is estimated and does nothing more: too weak.
+        Arena tick = new Arena();
+        tick.crystal(2, 0, 0);
+        Crystal weak = tick.crystal(4, 0, 1);
+        tick.refresh();
+        heard.clear();
+        CrystalSearch<Fighter> breaking = tick.search(b -> b.listener(heard::add));
+        breaking.attacked(breaking.findBreak().getCrystal());
+        heard.clear();
+        BreakOption<Fighter> none = breaking.findBreak();
+        boolean allWeak = !heard.isEmpty() && none == null;
+        for (Judgement<Fighter> judgement : heard) {
+            allWeak &= judgement.getVerdict() == Judgement.Verdict.TOO_WEAK && Double.isNaN(judgement.getSelfDamage());
+        }
+        Checks.check("and why nothing was chosen: too weak, with no need to work out your damage (" + heard + ")",
+                allWeak && weak != null);
+
+        Checks.check("each refusal by its own verdict: the self cap",
+                heardVerdict(arena, b -> b.thresholds(Thresholds.<Fighter>builder().maxSelfDamage(() -> 45).build()),
+                        Judgement.Verdict.SELF_CAP));
+        arena.self.health = 6;
+        Checks.check("anti-suicide", heardVerdict(arena,
+                b -> b.thresholds(Thresholds.<Fighter>builder().antiSuicide(() -> 1).build()), Judgement.Verdict.SUICIDAL));
+        arena.self.health = 36;
+        Checks.check("your own filters", heardVerdict(arena, b -> b.filter(p -> false), Judgement.Verdict.FILTERED));
+        Fighter friend = arena.world.add(new Fighter(3.5, 1, 2.5));
+        arena.refresh();
+        TargetSelector<Fighter> friends = TargetSelector.from(arena.players).range(20).where(f -> f == friend).build();
+        Checks.check("and protecting a friend", heardVerdict(arena, b -> b.protect(friends)
+                .thresholds(Thresholds.<Fighter>builder().maxProtectedDamage(() -> 1).build()), Judgement.Verdict.ENDANGERS));
+
+        Arena crystals = new Arena();
+        crystals.crystal(2, 0, 0);
+        crystals.refresh();
+        List<Judgement<Fighter>> breaks = new ArrayList<>();
+        crystals.search(b -> b.listener(breaks::add)).findBreak();
+        Checks.check("breaking is heard too, as not placing", !breaks.isEmpty() && !breaks.get(0).isPlacing());
+    }
+
+    private static void strictPlacement() {
+        Arena arena = new Arena();
+        PlaceOption<Fighter> loose = arena.search(b -> b).findPlace();
+        Checks.check("without click rules, an option has no click", loose.getClick() == null);
+
+        Clicks strict = Clicks.builder().support(arena.blocks::isBase).replaceable(arena.blocks::isClear)
+                .faces(FaceRule.facingEye()).build();
+        CrystalSearch<Fighter> search = arena.search(b -> b.clicks(strict));
+        PlaceOption<Fighter> spot = search.findPlace();
+        dev.px.core.math.Vec3 eye = arena.eye();
+        Checks.check("with them, it says which face of the base to click, one turned toward you (" + spot.getClick() + ")",
+                spot.getClick() != null && spot.getClick().getBlock().equals(dev.px.core.math.Vec3i.of(spot.getX(),
+                        spot.getY(), spot.getZ()))
+                        && FaceRule.facingEye().allows(eye, spot.getClick().getBlock(), spot.getClick().getFace(),
+                        spot.getClick().getHit()));
+        Checks.check("and the aim is its hit point", spot.getAim().equals(spot.getClick().getHit()));
+        Checks.check("on the same base the loose search chose: any face puts a crystal on top",
+                spot.getX() == loose.getX() && spot.getZ() == loose.getZ() && spot.getDamage() == loose.getDamage());
+
+        // A base above your eyes: its top cannot be seen, so a server that wants the top refuses it.
+        arena.blocks.base(1, 3, 1);
+        FaceRule topOnly = FaceRule.facingEye().and((e, block, face, hit) -> face == dev.px.core.math.Direction.UP);
+        CrystalSearch<Fighter> tops = arena.search(b -> b.clicks(Clicks.builder().support(arena.blocks::isBase)
+                .replaceable(arena.blocks::isClear).faces(topOnly).build()));
+        tops.findPlace();
+        CrystalSearch<Fighter> sides = arena.search(b -> b.clicks(strict));
+        sides.findPlace();
+        Checks.check("a base whose top is above your eyes is offered by a server that takes any face you can see, "
+                        + "and not by one that wants the top (" + tops.getLastPlaceStats().getUnclickable() + " refused)",
+                tops.getLastPlaceStats().getUnclickable() == 1 && sides.getLastPlaceStats().getUnclickable() == 0);
+
+        List<PlaceOption<Fighter>> plan = search.planPlaces(2);
+        Checks.check("planned places carry their clicks too", plan.size() == 2 && plan.get(1).getClick() != null);
+    }
+
+    private static boolean heardVerdict(Arena arena,
+                                        Function<CrystalSearch.Builder<Fighter>, CrystalSearch.Builder<Fighter>> tweak,
+                                        Judgement.Verdict verdict) {
+        List<Judgement<Fighter>> heard = new ArrayList<>();
+        arena.search(b -> tweak.apply(b).listener(heard::add)).findPlace();
+        for (Judgement<Fighter> judgement : heard) {
+            if (judgement.getVerdict() == verdict) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void lifecycle() {

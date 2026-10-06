@@ -16,6 +16,7 @@ final class Reading {
     double eyeHeight;
     float yaw;
     float pitch;
+    long stamp;
 
     /** Fills this from the source; throws whatever the source throws. */
     void read(EntitySource<Object> source, Object entity) {
@@ -27,5 +28,6 @@ final class Reading {
         eyeHeight = source.eyeHeight(entity);
         yaw = source.yaw(entity);
         pitch = source.pitch(entity);
+        stamp = source.positionStamp(entity);
     }
 }

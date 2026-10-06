@@ -3,6 +3,8 @@ package dev.px.combat.search;
 import dev.px.combat.crystal.CrystalRules;
 import dev.px.combat.explosion.ExplosionModel;
 import dev.px.combat.explosion.Explosive;
+import dev.px.combat.place.Click;
+import dev.px.combat.place.Clicks;
 import dev.px.combat.search.engine.ExplosiveSearch;
 import dev.px.combat.search.engine.Found;
 import dev.px.combat.search.engine.PlaceDevice;
@@ -10,18 +12,22 @@ import dev.px.combat.search.engine.SearchStats;
 import dev.px.combat.search.engine.UseDevice;
 import dev.px.combat.search.option.BreakOption;
 import dev.px.combat.search.option.PlaceOption;
+import dev.px.combat.search.rule.AimCost;
 import dev.px.combat.search.rule.Reach;
 import dev.px.combat.search.timing.AttackLog;
 import dev.px.combat.world.BlockView;
 import dev.px.combat.world.Rays;
 import dev.px.core.entity.EntityTracker;
 import dev.px.core.entity.Tracked;
+import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -39,6 +45,7 @@ import java.util.function.Consumer;
  *         .placeReach(Reach.of(placeRange::getDouble, placeWall::getDouble))
  *         .breakReach(Reach.of(breakRange::getDouble, breakWall::getDouble))
  *         .thresholds(myThresholds)
+ *         .placeAimCost(myAimCost)                                // optional: what turning is worth
  *         .bus(Core.bus())                                        // ticks itself
  *         .build();
  *
@@ -46,7 +53,13 @@ import java.util.function.Consumer;
  * BreakOption<LivingEntity> hit = search.findBreak();
  * if (hit != null) { attack(hit.getCrystal().get()); search.attacked(hit.getCrystal()); }
  * PlaceOption<LivingEntity> spot = search.findPlace();
- * if (spot != null) place(spot.getX(), spot.getY(), spot.getZ());
+ * if (spot != null) { lookAt(spot.getAim()); place(spot.getX(), spot.getY(), spot.getZ()); }
+ *
+ * // placing: say so, and the next search will not collide with it, and will know it as yours when it shows up
+ * search.placed(spot);
+ *
+ * // several a tick, none colliding:
+ * for (PlaceOption<LivingEntity> each : search.planPlaces(2)) { place(each); search.placed(each); }
  *
  * // or the best few, to fall back on when you cannot reach the first:
  * for (PlaceOption<LivingEntity> option : search.findPlaces(3)) {
@@ -64,9 +77,11 @@ import java.util.function.Consumer;
  * <ul>
  *   <li><b>Placing.</b> One spot per cell: a base {@code CrystalRules.canPlace}
  *       accepts. Its reach is measured to the base block, and past the wall
- *       range the point just above the base's top face must be in sight.
+ *       range the point just above the base's top face must be in sight. You
+ *       aim at the centre of that face.
  *   <li><b>Breaking.</b> Crystals within break range come from your tracker's
- *       spatial grid, not a scan of every entity, measured to their boxes. Their
+ *       spatial grid, not a scan of every entity, measured to their boxes, and
+ *       aimed at their centres. Their
  *       age is how long the tracker has held them, so a crystal from
  *       {@link #spawned} is never too young &mdash; the point of breaking on spawn.
  *   <li><b>Timing.</b> A crystal is remembered by its entity, so inhibit
@@ -84,6 +99,8 @@ public final class CrystalSearch<E> {
 
     private final CrystalRules<E> rules;
     private final EntityTracker<?> crystals;
+    /** Null without click rules: then any base in reach will do. */
+    private final Clicks clicks;
     private final ExplosiveSearch<E> engine;
     private final Placing placing = new Placing();
     private final Breaking breaking = new Breaking();
@@ -91,6 +108,7 @@ public final class CrystalSearch<E> {
     private CrystalSearch(Builder<E> builder) {
         this.rules = builder.rules;
         this.crystals = builder.crystals;
+        this.clicks = builder.clicks;
         this.engine = builder.newEngine();
     }
 
@@ -100,6 +118,7 @@ public final class CrystalSearch<E> {
 
     /** @return the best place to put a crystal now, or null when nowhere is worth it */
     public PlaceOption<E> findPlace() {
+        placing.chosen.clear();
         Found<E, Vec3i> found = engine.findPlace(placing);
         return found == null ? null : toPlace(found);
     }
@@ -113,12 +132,46 @@ public final class CrystalSearch<E> {
      * @return at most {@code count} options, each on its own base; empty when nowhere is worth it
      */
     public List<PlaceOption<E>> findPlaces(int count) {
+        placing.chosen.clear();
         List<Found<E, Vec3i>> found = engine.findPlaces(placing, count);
         List<PlaceOption<E>> places = new ArrayList<>(found.size());
         for (Found<E, Vec3i> option : found) {
             places.add(toPlace(option));
         }
         return places;
+    }
+
+    /**
+     * Up to {@code count} bases to place on together this tick: each the best whose
+     * crystal would not collide with the ones before it, or with any crystal
+     * placed and not yet shown. For placing several a tick; {@link #findPlaces}
+     * gives alternatives to one.
+     *
+     * @return at most {@code count}, best first; empty when nowhere is worth it
+     */
+    public List<PlaceOption<E>> planPlaces(int count) {
+        placing.chosen.clear();
+        List<Found<E, Vec3i>> found = engine.planPlaces(placing, count);
+        List<PlaceOption<E>> places = new ArrayList<>(found.size());
+        for (Found<E, Vec3i> option : found) {
+            places.add(toPlace(option));
+        }
+        return places;
+    }
+
+    /**
+     * You placed a crystal on this base. Until it shows up &mdash; or its wait,
+     * {@code pendingTicks}, runs out &mdash; no placement collides with it, and when
+     * it shows up, breaking it is {@linkplain BreakOption#isOwn yours}.
+     */
+    public void placed(int x, int y, int z) {
+        engine.placed(placing, Vec3i.of(x, y, z));
+    }
+
+    /** @see #placed(int, int, int) */
+    public void placed(PlaceOption<?> option) {
+        Validate.notNull(option, "option");
+        placed(option.getX(), option.getY(), option.getZ());
     }
 
     /** @return the best crystal to break now, or null when none is worth it */
@@ -180,7 +233,7 @@ public final class CrystalSearch<E> {
 
     private PlaceOption<E> toPlace(Found<E, Vec3i> found) {
         Vec3i base = found.getSubject();
-        return new PlaceOption<>(base.getX(), base.getY(), base.getZ(), found);
+        return new PlaceOption<>(base.getX(), base.getY(), base.getZ(), found, placing.chosen.get(base));
     }
 
     private BreakOption<E> toBreak(Found<E, Tracked<?>> found) {
@@ -189,6 +242,9 @@ public final class CrystalSearch<E> {
 
     /** A crystal on a base: one spot per cell. */
     private final class Placing implements PlaceDevice<E, Vec3i> {
+
+        /** The click each base was judged clickable by, this search. */
+        final Map<Vec3i, Click> chosen = new HashMap<>();
 
         @Override
         public ExplosionModel<E> model() {
@@ -220,6 +276,43 @@ public final class CrystalSearch<E> {
         @Override
         public BlockView blocksWhenFired(Vec3i base) {
             return rules.getBlocks();
+        }
+
+        @Override
+        public Vec3 aim(Vec3i base) {
+            return Vec3.of(base.getX() + 0.5, base.getY() + 1, base.getZ() + 0.5);
+        }
+
+        @Override
+        public Box occupies(Vec3i base) {
+            return rules.box(base.getX(), base.getY(), base.getZ());
+        }
+
+        /** A crystal goes on top of the base whichever face is clicked: any your rules accept will do. */
+        @Override
+        public boolean clickable(Vec3 eye, Vec3i base) {
+            if (clicks == null) {
+                return true;
+            }
+            Click click = clicks.bestOn(eye, base);
+            if (click == null) {
+                return false;
+            }
+            chosen.put(base, click);
+            return true;
+        }
+
+        @Override
+        public Vec3 aim(Vec3 eye, Vec3i base) {
+            Click click = chosen.get(base);
+            return click != null ? click.getHit() : aim(base);
+        }
+
+        /** The column over the base, as tall as a crystal: a crystal standing anywhere in it is in the way. */
+        @Override
+        public Box needs(Vec3i base) {
+            return Box.of(base.getX(), base.getY() + 1, base.getZ(),
+                    base.getX() + 1, base.getY() + 1 + rules.getBody().getHeight(), base.getZ() + 1);
         }
     }
 
@@ -257,6 +350,16 @@ public final class CrystalSearch<E> {
         }
 
         @Override
+        public Vec3 aim(Tracked<?> crystal) {
+            return crystal.getCenter();
+        }
+
+        @Override
+        public Box occupies(Tracked<?> crystal) {
+            return crystal.getBox();
+        }
+
+        @Override
         public Object key(Tracked<?> crystal) {
             return crystal.get();
         }
@@ -271,6 +374,7 @@ public final class CrystalSearch<E> {
 
         private CrystalRules<E> rules;
         private EntityTracker<?> crystals;
+        private Clicks clicks;
 
         private Builder() {
         }
@@ -292,9 +396,25 @@ public final class CrystalSearch<E> {
             return this;
         }
 
+        /**
+         * How placing works on your server: which faces of a base it accepts, and
+         * where on them to click. With them, a base is only offered with a click
+         * your rules allow, and {@code PlaceOption.getClick()} says which. Without
+         * them, any base in reach.
+         */
+        public Builder<E> clicks(Clicks clicks) {
+            this.clicks = Validate.notNull(clicks, "clicks");
+            return this;
+        }
+
         /** Required: how far away you break crystals. */
         public Builder<E> breakReach(Reach reach) {
             return reachToUse(reach);
+        }
+
+        /** What turning to look at a crystal costs before you break it. {@link AimCost#NONE} unless set. */
+        public Builder<E> breakAimCost(AimCost cost) {
+            return aimCostToUse(cost);
         }
 
         /** @throws IllegalStateException naming each required part not given */

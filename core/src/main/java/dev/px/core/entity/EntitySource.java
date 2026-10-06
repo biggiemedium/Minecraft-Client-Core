@@ -73,4 +73,22 @@ public interface EntitySource<E> {
     default float pitch(E entity) {
         return 0f;
     }
+
+    /**
+     * Something that changes whenever the server sends this entity a new
+     * position: a counter your packet handler bumps, or the tick the last
+     * position packet was applied. Report the position the server sent, too, not
+     * the one the game eases toward for drawing.
+     *
+     * <p>Servers do not send every entity's position every tick, so a position
+     * that has not changed may be news that it stopped or no news at all. With a
+     * stamp, {@code Core.prediction()} knows which; without one, -1, a position
+     * counts as new when it changes, or once it has held still for its tracker's
+     * {@linkplain EntityTracker#setUpdateGap update gap}.
+     *
+     * @return the stamp, or -1 when you do not know
+     */
+    default long positionStamp(E entity) {
+        return -1L;
+    }
 }

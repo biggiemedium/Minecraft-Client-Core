@@ -1,6 +1,7 @@
 package dev.px.combat.search.option;
 
 import dev.px.combat.bed.Bed;
+import dev.px.combat.place.Click;
 import dev.px.core.math.Direction;
 import dev.px.core.math.Vec3i;
 
@@ -9,7 +10,8 @@ import dev.px.core.math.Vec3i;
  *
  * <p>Place it with the foot in {@link #getFoot()}, facing {@link #getFacing()}
  * &mdash; {@code getFacing().toYaw()} is the yaw to send &mdash; then use it at
- * once. Which face to click to put the foot there is your client's business.
+ * once. With {@code Clicks}, {@link #getClick()} says what to click, and looking
+ * at its hit faces the bed the right way.
  *
  * <p>Immutable.
  *
@@ -18,11 +20,27 @@ import dev.px.core.math.Vec3i;
 public final class BedPlaceOption<E> extends Option<E> {
 
     private final Bed bed;
+    private final Click click;
 
     public BedPlaceOption(Bed bed, Option<E> found) {
+        this(bed, found, null);
+    }
+
+    /** @param click how to click to place it; null when there are no click rules */
+    public BedPlaceOption(Bed bed, Option<E> found, Click click) {
         super(found);
         this.bed = bed;
+        this.click = click;
     }
+    /**
+     * @return how to click for it, when the search was given {@code Clicks}: the
+     *         block, the face and the hit vector your server accepts, and what
+     *         {@link #getAim()} points at. Null without them
+     */
+    public Click getClick() {
+        return click;
+    }
+
 
     public Bed getBed() {
         return bed;

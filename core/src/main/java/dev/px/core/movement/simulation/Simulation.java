@@ -38,7 +38,8 @@ import java.util.List;
  *       <em>before</em> moving and applied <em>after</em>, which is why a player
  *       who steps off ice keeps sliding for one more tick.
  *   <li>Jump, if held and on the ground, plus the horizontal kick a sprint jump
- *       gets.
+ *       gets. The keys still accelerate at the ground rate on the tick of the jump,
+ *       which is most of why sprint-jumping is faster than sprinting.
  *   <li>Input becomes acceleration and is added to velocity. Ground acceleration
  *       scales against the cube of friction; air acceleration is a flat constant.
  *   <li>Move, sweeping <b>Y first, then X, then Z</b>, clipping against every
@@ -121,7 +122,10 @@ public final class Simulation {
                 ? slipperiness * profile.getGroundFriction()
                 : profile.getGroundFriction();
 
-        // (2) Jump.
+        // (2) Jump. The keys still accelerate as on the ground this tick: the game's
+        // jump sets the vertical velocity and nothing else, and the move that
+        // follows reads the ground it took off from.
+        boolean pushingOffGround = onGround;
         if (input.isJump() && onGround) {
             double kickX = 0d;
             double kickZ = 0d;
@@ -136,7 +140,7 @@ public final class Simulation {
         }
 
         // (3) Input becomes acceleration.
-        velocity = velocity.add(acceleration(profile, input, onGround, friction));
+        velocity = velocity.add(acceleration(profile, input, pushingOffGround, friction));
 
         // (4) and (5) Move, sweeping one axis at a time, then try to step up.
         Swept swept = move(profile, position, velocity, onGround, space);
@@ -167,8 +171,8 @@ public final class Simulation {
      * <p>Holding the input constant is the assumption that limits how far this is
      * worth trusting. For the player's own movement over a few ticks it is
      * usually true. For anything with a mind of its own it is a guess that gets
-     * worse every tick &mdash; see {@link MotionTrack#extrapolate} for the other
-     * way of answering that question.
+     * worse every tick &mdash; {@code Core.prediction()} answers that question
+     * by working out the input from how it has moved, and saying how sure it is.
      */
     public static MotionState simulate(PhysicsProfile profile, MotionState state,
                                        MovementInput input, int ticks, CollisionSpace space) {
@@ -245,6 +249,10 @@ public final class Simulation {
             forward *= profile.getSneakMultiplier();
             strafe *= profile.getSneakMultiplier();
         }
+        // Every tick, before the diagonal is normalised: so only a straight line
+        // feels it. See PhysicsProfile#inputScale.
+        forward *= profile.getInputScale();
+        strafe *= profile.getInputScale();
 
         double rate;
         if (onGround) {

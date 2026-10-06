@@ -12,9 +12,12 @@ import lombok.Getter;
  * keys and the facing together and produces a direction from the pair. Bundling
  * them also keeps {@link Simulation#step} to three arguments.
  *
- * <p>Sign conventions match the game's fields so an adapter can pass them
- * straight through: forward is positive walking forward, and <b>strafe is
- * positive walking left</b>.
+ * <p>Forward and strafe are the <b>keys</b>, -1 to 1, with the game's signs:
+ * forward is positive walking forward, and <b>strafe is positive walking left</b>.
+ * Pass them before anything scales them. {@link Simulation} applies the sneak
+ * multiplier and the profile's per-tick input scale itself, so a value the game
+ * has already scaled &mdash; a player's {@code moveForward} after sneaking, say
+ * &mdash; would be scaled twice.
  *
  * <pre>{@code
  * MovementInput held = MovementInput.of(player.rotationYaw, forwardKey, strafeKey)

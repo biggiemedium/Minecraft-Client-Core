@@ -87,6 +87,16 @@ public class EntityTracker<E> {
     /** Grid cell edge until {@link #setCellSize} says otherwise. A tuning knob, not a fact about any game. */
     public static final double DEFAULT_CELL_SIZE = 8d;
 
+    /**
+     * Ticks of position each entity keeps until {@link #setHistory} says otherwise:
+     * a second and a half at twenty a second. Enough to see a sprint-jump's whole
+     * arc behind a ten-tick prediction tested from a few ticks back.
+     */
+    public static final int DEFAULT_HISTORY = 30;
+
+    /** Ticks a moving entity may go without a new position, until {@link #setUpdateGap} says otherwise: every tick. */
+    public static final int DEFAULT_UPDATE_GAP = 1;
+
     private final Class<E> type;
     private final Predicate<? super E> filter;
 
@@ -102,6 +112,8 @@ public class EntityTracker<E> {
     /** The furthest any member's box reaches from its position, which is how much a position-indexed search must widen. */
     private double reach;
     private int scanLimit = DEFAULT_SCAN_LIMIT;
+    private int history = DEFAULT_HISTORY;
+    private int updateGap = DEFAULT_UPDATE_GAP;
 
     /**
      * @param type the game's class or interface for what this tracker holds;
@@ -310,6 +322,41 @@ public class EntityTracker<E> {
         return this;
     }
 
+    /**
+     * @param ticks how many ticks of position each entity keeps, this tick's
+     *        included, for {@code Core.prediction()} to read how it moves. Applies
+     *        to entities tracked from now on. Three is the least a prediction can
+     *        work from; 1 keeps none, for something you will never predict
+     */
+    public EntityTracker<E> setHistory(int ticks) {
+        Validate.check(ticks >= 1, "history must be at least 1 tick");
+        this.history = ticks;
+        return this;
+    }
+
+    public int getHistory() {
+        return history;
+    }
+
+    /**
+     * @param ticks the fewest ticks a position must hold still to be taken as
+     *        standing still rather than no news. Each entity also learns how often
+     *        the server sends it &mdash; the median of its last three intervals
+     *        &mdash; and waits that long at least, so this is a floor, and 1 unless
+     *        set. Raise it if your server is known to go longer between positions
+     *        than its entities' recent history shows. Applies to entities tracked
+     *        from now on
+     */
+    public EntityTracker<E> setUpdateGap(int ticks) {
+        Validate.check(ticks >= 1, "update gap must be at least 1 tick");
+        this.updateGap = ticks;
+        return this;
+    }
+
+    public int getUpdateGap() {
+        return updateGap;
+    }
+
     @Override
     public String toString() {
         return getClass().getSimpleName() + "<" + type.getSimpleName() + ">(" + members.size() + ")";
@@ -391,7 +438,7 @@ public class EntityTracker<E> {
     // ------------------------------------------------------------ internals
 
     private Tracked<E> add(E entity, Reading reading, long tick) {
-        Tracked<E> tracked = new Tracked<>(entity);
+        Tracked<E> tracked = new Tracked<>(entity, history, updateGap);
         tracked.update(reading, tick);
         byHandle.put(entity, tracked);
         members.add(tracked);

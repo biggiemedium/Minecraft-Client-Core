@@ -24,6 +24,7 @@ import dev.px.core.module.Module;
 import dev.px.core.module.ModuleRegistry;
 import dev.px.core.module.ThreadedModule;
 import dev.px.core.movement.rotation.RotationService;
+import dev.px.core.movement.prediction.PredictionService;
 import dev.px.core.movement.simulation.SimulationService;
 import dev.px.core.movement.timeline.TimelineRecorder;
 import dev.px.core.network.NetworkService;
@@ -106,6 +107,7 @@ public final class Core {
     private final ShaderService shaderService;
     private final RotationService rotationService;
     private final SimulationService simulationService;
+    private final PredictionService predictionService;
     private final TimelineRecorder timelineRecorder;
     private final NetworkService networkService;
     private final ServerService serverService;
@@ -155,9 +157,12 @@ public final class Core {
         // Also inert until the client installs a sink: claims are arbitrated, and
         // with nothing to write them to, nothing is written.
         this.rotationService = services.register(new RotationService(logger, bus));
-        // Useful with nothing installed: the tracker needs no world, and a
-        // simulation with no collision space is simply a ballistic one.
+        // Useful with nothing installed: a simulation with no collision space is
+        // simply a ballistic one.
         this.simulationService = services.register(new SimulationService(logger, bus));
+        // Holds nothing of its own: it reads trackers' histories and the
+        // simulation's physics when asked.
+        this.predictionService = services.register(new PredictionService(simulationService));
         // Where the adapter's packets come in. Inert until it posts PacketEvents;
         // everything below reads them through the one describer installed here.
         this.networkService = services.register(new NetworkService(logger, bus));
@@ -354,15 +359,24 @@ public final class Core {
     }
 
     /**
-     * Movement prediction: where tracked things have been, and where the real
-     * movement rules say something will end up.
+     * The movement rules, run forward: where you will be, given your input, and
+     * the self-check that says when to stop trusting them.
      *
-     * <p>Tracking works with nothing installed. Simulation falls back to
+     * <p>Falls back to
      * {@link dev.px.core.movement.simulation.CollisionSpace#empty()} until the
      * client supplies a world, which makes it a trajectory rather than an error.
      */
     public static SimulationService simulation() {
         return get().simulationService;
+    }
+
+    /**
+     * Where somebody else will be: what they are pressing, worked out from how
+     * any tracked entity has moved, played forward through the simulation's rules
+     * and weighed by how well each guess explained their last few ticks.
+     */
+    public static PredictionService prediction() {
+        return get().predictionService;
     }
 
     /**

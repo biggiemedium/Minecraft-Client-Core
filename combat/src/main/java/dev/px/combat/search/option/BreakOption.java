@@ -19,7 +19,7 @@ public final class BreakOption<E> extends Option<E> {
         this.crystal = crystal;
     }
 
-    /** @return the crystal to attack; {@code getCrystal().get()} is the game's own entity */
+    /** @return the crystal to attack; {@code getCrystal().get()} is the game's own entity. {@link #isOwn()} says if you placed it */
     public Tracked<?> getCrystal() {
         return crystal;
     }

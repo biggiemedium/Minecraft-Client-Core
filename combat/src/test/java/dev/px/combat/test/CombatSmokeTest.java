@@ -18,6 +18,8 @@ public final class CombatSmokeTest {
         VectorTests.run();
         SearchTests.run();
         BedTests.run();
+        HoleTests.run();
+        PlaceTests.run();
         System.exit(Checks.summary());
     }
 }

@@ -176,9 +176,11 @@ a plausible reordering gives answers that are *almost* right:
 
 1. friction from the block underfoot — decided **before** moving, applied
    **after**, which is why stepping off ice slides one more tick
-2. jump, plus the horizontal kick a sprint jump gets
-3. input becomes acceleration, scaled against the cube of friction on the ground
-   and flat in the air
+2. jump, plus the horizontal kick a sprint jump gets — and the keys still
+   accelerate at the **ground** rate that tick, since the game's jump touches
+   nothing but the velocity
+3. the keys, scaled by 0.98 every tick, become acceleration, scaled against the
+   cube of friction on the ground and flat in the air
 4. move, sweeping **Y, then X, then Z**, zeroing the velocity on each blocked axis
 5. step up, if the horizontal move was blocked from the ground
 6. gravity and drag on the vertical, friction on the horizontal
@@ -219,25 +221,32 @@ optional second method with a sensible default, for clients that care about ice.
 
 #### How accurate it is
 
-Measured by the test suite against the figures Minecraft is measured at, not
-against our own constants:
+Measured by the test suite against the figures the Minecraft Wiki gives (checked
+2026-10-06), not against our own constants:
 
-| | Model | Minecraft | |
-|---|---|---|---|
-| Walking | 4.405 b/s | 4.317 | +2.05% |
-| Sprinting | 5.727 b/s | 5.612 | +2.05% |
-| Sneaking | 1.322 b/s | 1.295 | +2.05% |
-| Jump height | 1.2522 blocks | 1.2522 | exact |
-| First tick of a fall | −0.0784 | −0.0784 | exact |
+| | Model | Minecraft | | Source |
+|---|---|---|---|---|
+| Walking | 4.3172 b/s | 4.317 | +0.00% | [Walking](https://minecraft.wiki/w/Walking) |
+| Sprinting | 5.6123 b/s | 5.612 | +0.01% | [Sprinting](https://minecraft.wiki/w/Sprinting) |
+| Sneaking | 1.2952 b/s | 1.295 | +0.01% | [Player § Movement speed](https://minecraft.wiki/w/Player#Movement_speed) |
+| Sprint-jumping | 7.1268 b/s | 7.127 | −0.00% | [Sprinting](https://minecraft.wiki/w/Sprinting) |
+| Walking on ice | 4.1572 b/s | 4.157 | +0.01% | [Walking](https://minecraft.wiki/w/Walking) |
+| Walking on blue ice | 4.3760 b/s | 4.376 | +0.00% | [Walking](https://minecraft.wiki/w/Walking) |
+| Walking on slime | 3.0400 b/s | 3.040 | −0.00% | [Walking](https://minecraft.wiki/w/Walking) |
+| Jump height | 1.2522 blocks | 1.2522 | exact | [Jumping](https://minecraft.wiki/w/Jumping) |
+| Jump Boost I / II | 1.8361 / 2.5168 | 1.8361 / 2.5168 | exact | [Jumping](https://minecraft.wiki/w/Jumping) |
+| First tick of a fall | −0.0784 | −0.0784 | exact | gravity and drag, [Entity § Motion](https://minecraft.wiki/w/Entity#Motion) |
+| Terminal fall speed | 78.4 b/s | 78.4 | exact | [Entity § Motion](https://minecraft.wiki/w/Entity#Motion) |
 
-**Vertical is exact** — those numbers fall straight out of gravity, drag and the
-jump constant applied in the right order, and nothing was tuned to produce them.
+Nothing was tuned to produce these: they fall out of the game's constants
+applied in the game's order. The suite holds them to a tenth of a percent.
 
-**Horizontal is uniformly 2% fast.** Uniform across all three, so it is one
-systematic offset rather than noise. Core reproduces the game's formula with the
-game's documented constants and that is where it lands; closing the last two
-percent is what calibration below is for, because the honest way to get it is to
-measure your version rather than have us guess harder.
+Two rules took them there, and both are easy to miss. Horizontal movement ran a
+uniform 2.05% fast until the keys were scaled by 0.98 each tick, as the game does
+before they become acceleration (`PhysicsProfile.inputScale`); a diagonal hides
+it, because the game normalises two keys after scaling them. And sprint-jumping
+ran at 6.09 until the tick of each jump accelerated at the ground rate, as the
+game's does.
 
 > One trap worth knowing, because it cost this code a real bug. `walkSpeed`
 > (0.216) is a **top speed** — what a readout shows and what `MovementMath`
@@ -333,34 +342,130 @@ ladders and no lag spikes, because a sample taken during an unmodelled branch is
 noise the scan will happily fit a constant to. `DriftMonitor` is how you find a
 clean stretch to record.
 
-#### Tracking, which is a different question
+### Prediction: where *they* will be
 
-"Where will *I* be" and "where will *they* be" look like one problem and are not,
-so they are answered by different mechanisms:
+"Where will *I* be" and "where will *they* be" look like one problem and are not.
+Your input is known, so simulate it. Theirs is not: nobody tells the client what
+another player is pressing. `Core.prediction()` works it out from how they have
+moved, runs it through the same `Simulation` — and, because players do not always
+move by the rules, also says how soon they could possibly be anywhere.
 
 ```java
-// every tick, for anything worth knowing about -- the key is opaque, so Core
-// still never learns what an entity is
-Core.simulation().record(other.getEntityId(), position, other.onGround);
+Core.prediction().setPhysics(myEntityPhysics);                 // their effects and attributes, from your client
 
-Vec3 soon = Core.simulation().predict(id, 2);
+Prediction next = Core.prediction().predict(target, 6);       // any Tracked entity
+Vec3 likely = next.positionAt(4);                             // likely: the heaviest future
+int soonest = next.earliestPossible(holeBox);                 // possible: a floor, however they move
+MotionEstimate now = next.getEstimate();                      // what they are pressing, as best it can tell
+Behaviour seen = next.getBehaviour();                         // how they actually move: speed, drops, how legit
+
+// a future of your own, weighed alongside the rest
+Prediction holing = Core.prediction().predict(target, 8, Scenario.toward("hole", holeCentre));
+double odds = holing.chanceBy(state -> inHole(state.getPosition()), 5);
+if (holing.isReliable()) { ... }
 ```
 
-Your own movement is deterministic: the input is known, so simulate it. Another
-player's is a guess — nobody tells the client their intentions, so all there is to
-go on is where they have been. `predict` extends their **measured** velocity in a
-straight line, which is worth trusting for a tick or two of lag compensation and
-not much further. `coast` sits between the two: it falls and collides, but still
-assumes they do nothing of their own accord.
+Nothing needs feeding. Every `Tracked` keeps the last few ticks of where it was
+(`EntityTracker.setHistory`, 30 unless set), and which of those positions were
+news (`isFreshAgo`), and the service reads that.
 
-Velocity is measured from position deltas, not read from a motion field, because
-for anything but the local player there is no motion field to read. Which also
-means: **record on the tick, not on the frame.** Positions read during rendering
-are interpolated — smoothed and slightly behind — and differencing them gives a
-velocity that is both damped and late.
+1. **News, not ticks.** Servers do not send every entity's position every tick —
+   vanilla, as far as we know, sends a walking player's every other tick. A
+   position that has not changed may mean they stopped or that nothing was sent.
+   Your `EntitySource.positionStamp` says which; without it, each entity learns
+   how often its positions arrive and treats holding still for longer than that as
+   stopping. Predictions start from the last real position and are already as far
+   along as the entity is (`Prediction.getAge()`).
+2. **Rules.** Your `EntityPhysics` says what each entity moves by right now — its
+   Speed or Slowness, its attributes, its pose — on top of the simulation's
+   profile. What it tells the prediction is known, so a player with Speed II is
+   never mistaken for a cheater. Return null for an entity that is not walking —
+   riding, gliding, swimming — and only how it has been moving is used.
+3. **Estimate.** Between each two positions that were news, every input they could
+   have held — standing, walking, sprinting or sneaking, straight or on two keys,
+   jumping or not — is run through `Simulation` for the ticks between, and the one
+   landing closest is kept. Collisions, step-ups and the sprint-jump kick come for
+   free. On positions a tick apart the starting velocity is exactly what the rules
+   carry — not the distance last moved, which on the ground is nearly twice as
+   much.
+4. **Behaviour.** Every new span is learned from (`Behaviour`): the fastest they
+   have moved, risen and dropped, how often the server sends them, and how much of
+   their movement the rules explain. When their ground movement keeps outrunning
+   the rules — a speed hack, or an effect your client did not report — the rules
+   are scaled up for them, so "keeps going" and "heads for the hole" get there as
+   fast as they do. A move faster than the teleport speed is a pearl or a setback
+   and is not learned from.
+5. **Futures.** `Scenario.HOLDS`, `STOPS` and `CARRIES` unless you set others, plus
+   any you pass, are each played forward with collision. `CARRIES` keeps moving
+   exactly as they last moved with no friction: how a cheat that sets velocity
+   directly moves, and nothing by the rules does.
+6. **Weights.** Each scenario is also played from a few positions back and
+   compared with where they really went: smaller error, more weight. A scenario's
+   `getPrior()` multiplies its weight before any evidence, for futures the evidence
+   cannot tell apart. Someone no scenario explains is marked unreliable.
+7. **Possible.** `earliestPossible(box)` is the soonest they could touch a box, at
+   the fastest of what their rules allow and what they have been seen to do,
+   straight through any wall, falling or climbing as fast as they ever have. It is
+   a floor: only moving faster than they have yet been seen to can beat it.
 
-Every track is a bounded ring, so memory is `tracked × historyTicks` and does not
-grow over a session, and tracks nobody updates are dropped once a tick.
+Against the simulation's own truth: steady movement, sprint-jumping, running off a
+ledge or into a wall, positions every other tick with or without stamps, Speed II
+known or unknown, a speed hack running the rules twice as fast, and a strafe hack
+setting velocity directly are all predicted to within rounding ten ticks out,
+where a straight line misses a sprint-jumper by 2.6 blocks. The possible bound is
+never late across them all. Someone who changes what they are doing cannot be
+predicted by anything, but the weights say so.
+
+**Feed it the server's positions.** The position the game draws for another
+player is eased toward the one the server sent over a few ticks, which smooths
+and delays every move. Report the position the server last sent, and a stamp
+that changes whenever it sends one.
+
+**Horizons need history.** Futures are weighed by playing them from that far
+back, so a prediction further ahead than the history kept, less three ticks, is
+weighed by priors alone and is never reliable.
+
+**On 1.8, expect worse.** Its entity packets round positions to 1/32 of a block,
+and a single tick's move read through that much rounding gets direction wrong by
+several degrees. Fitting over several ticks would fix it at about three times the
+cost; it is not done.
+
+A prediction costs about 0.1–0.2 ms: one fetch from your `CollisionSpace`, then a
+few hundred simulated steps against the boxes it returned.
+
+#### Recording real movement, and replaying it
+
+Every number above comes from movement the simulation produced itself. Real
+players are measured by recording them:
+
+```java
+MovementRecorder recorder = new MovementRecorder(Core.prediction())
+        .names(entity -> ((PlayerEntity) entity).getName().getString());
+recorder.putMetadata("server", "my test server, 1.21, strafe module on");
+recorder.begin("strafe vs legit", Core.entities().get(EnemyTracker.class));
+recorder.bus(Core.bus());
+// ... play ...
+MovementJson.write(recorder.end(), Files.newBufferedWriter(path));
+
+// later, in a test or on your desk
+ReplayReport report = MovementReplay.of(MovementJson.read(Files.newBufferedReader(path)))
+        .horizons(1, 5, 10)
+        .configure(prediction -> prediction.setBacktest(6))         // whatever you want to try
+        .run();
+System.out.println(report);
+```
+
+A recording keeps, per tick and per entity, exactly what the prediction reads —
+position, facing, size, stamp — plus the rules your client gave and the blocks
+around each entity, re-read every few ticks so placed and broken blocks are kept.
+A replay puts a real `EntityService` and `PredictionService` back in the same
+place and scores every horizon against the positions the server really sent: the
+mean, 95th percentile and worst miss, how much of it called itself reliable and
+what those missed by, how often the possible bound was late, and what was learned
+of each entity — including how often your server sends positions.
+
+The way to know how a cheat looks is to record one: run your own client's speed,
+strafe or hole-snap module on a local server and record it from a second client.
 
 ### Where the physics numbers live
 
@@ -381,14 +486,55 @@ MovementMath.setProfile(PhysicsProfile.vanilla().withWalkSpeed(0.2806d));   // c
 a speed in blocks per tick, the second is the attribute the acceleration formula
 multiplies. See the accuracy notes above.
 
+#### Where each default comes from
+
+Every default in `PhysicsProfile.vanilla()` is the Minecraft Wiki's, checked on
+2026-10-06, and each field's Javadoc names its page. They are defaults, not
+anything Core depends on: when Mojang changes one, build a profile that says so
+(`withGravity`, `withStepHeight`, …) and nothing else moves.
+
+| Field | Default | Source |
+|---|---|---|
+| `moveSpeedAttribute` | 0.1 | "the default base value is 0.1", [Walking](https://minecraft.wiki/w/Walking) |
+| `inputScale` | 0.98 | implied: base 0.1 and a walking acceleration of 0.098, [Player § Movement speed](https://minecraft.wiki/w/Player#Movement_speed) |
+| `groundFriction` | 0.91 | horizontal drag, and 0.91 × friction on the ground, [Entity § Motion](https://minecraft.wiki/w/Entity#Motion) |
+| `defaultSlipperiness` | 0.6 | "Friction is 0.6 by default" (0.8 slime, 0.98 ice, 0.989 blue ice), [Entity § Motion](https://minecraft.wiki/w/Entity#Motion) |
+| `gravity` | 0.08 | `gravity` attribute, [Attribute](https://minecraft.wiki/w/Attribute); [Entity § Motion](https://minecraft.wiki/w/Entity#Motion) |
+| `drag` | 0.98 | vertical drag, [Entity § Motion](https://minecraft.wiki/w/Entity#Motion) |
+| `jumpVelocity` | 0.42 | `jump_strength` attribute, [Attribute](https://minecraft.wiki/w/Attribute) |
+| `stepHeight` | 0.6 | `step_height` attribute, [Attribute](https://minecraft.wiki/w/Attribute) |
+| `sprintMultiplier` | 1.3 | the `sprinting` modifier, 0.3 `add_multiplied_total`, [Attribute](https://minecraft.wiki/w/Attribute); "30 percent faster", [Sprinting](https://minecraft.wiki/w/Sprinting) |
+| `sneakMultiplier` | 0.3 | `sneaking_speed` attribute (1.21+), [Attribute](https://minecraft.wiki/w/Attribute) |
+| `speedPerLevel` | 0.2 | "+20% multiplied by the effect level", [Speed](https://minecraft.wiki/w/Speed) |
+| `slownessPerLevel` | 0.15 | "15% × level", [Slowness](https://minecraft.wiki/w/Slowness) |
+| `hitboxWidth` × `hitboxHeight` | 0.6 × 1.8 | standing, [Player](https://minecraft.wiki/w/Player) (1.5 sneaking, 0.6 swimming) |
+| `walkSpeed` | 0.21585 | 0.098 / (1 − 0.546), [Player § Movement speed](https://minecraft.wiki/w/Player#Movement_speed) |
+| `groundAccelerationBase` | 0.16277136 | the game's code; pinned by the walking, ice and slime speeds above |
+| `airAcceleration`, `sprintAirBonus` | 0.02, 0.006 | the game's code; pinned by sprint-jumping at 7.127 |
+| `sprintJumpBoost` | 0.2 | the game's code; pinned by sprint-jumping at 7.127 |
+| `jumpBoostPerLevel` | 0.1 | pinned by the Jump Boost I and II heights, [Jumping](https://minecraft.wiki/w/Jumping) |
+
+The last four are not stated on the wiki, so the suite pins them by the speeds it
+does give: a wrong value moves at least one row of the accuracy table, and the
+suite holds every row to a tenth of a percent.
+
+**Since 1.20.5 most of these are per-player attributes** a server can change:
+`movement_speed`, `jump_strength`, `gravity`, `step_height` and `scale` (1.20.5),
+and `sneaking_speed` (1.21) — see [Attribute](https://minecraft.wiki/w/Attribute). On those versions,
+read them from the player when you build the profile rather than trusting the
+default. `Core.prediction()` uses one profile for everyone, resized to each
+entity's hitbox; an enemy with Speed II or a changed attribute is predicted as if
+they had neither.
+
 Every method that needs them has both forms. `TICKS_PER_SECOND` stays a constant,
 because it is not physics — it is how the protocol defines a tick, and a server
 running slower is lag rather than a different rule.
 
-Sprinting, sneaking, water, cobwebs and per-block slipperiness are deliberately
-**not** in the profile. They are branches in the game's movement code, not
-multipliers, and the honest place for them is a simulation that models the
-branches — which is why `friction` takes slipperiness as an argument.
+Water, cobwebs, ladders and per-block slipperiness are deliberately **not** in
+the profile. They are branches in the game's movement code, or facts about a
+block, not multipliers: the honest place for them is a simulation that models the
+branches and a `CollisionSpace` that reports the block — which is why `friction`
+takes slipperiness as an argument.
 
 ### Timeline recording
 

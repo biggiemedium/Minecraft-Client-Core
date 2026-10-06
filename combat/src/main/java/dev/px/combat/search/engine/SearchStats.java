@@ -17,6 +17,9 @@ public final class SearchStats {
     int inReach;
     int placeable;
     int visible;
+    int unaimable;
+    int unclickable;
+    int pending;
     int bounds;
     int viable;
     int pruned;
@@ -50,6 +53,21 @@ public final class SearchStats {
     /** @return of those, ones within wall range or visible */
     public int getVisible() {
         return visible;
+    }
+
+    /** @return spots, or explosives in reach, dropped because your {@code AimCost} said you cannot turn to them in time */
+    public int getUnaimable() {
+        return unaimable;
+    }
+
+    /** @return spots, or explosives in reach, with no click your server's rules accept */
+    public int getUnclickable() {
+        return unclickable;
+    }
+
+    /** @return spots skipped because something you placed, not yet shown, takes up the room they need */
+    public int getPending() {
+        return pending;
     }
 
     /** @return upper bounds worked out: no raycasting, one per candidate and target in range */
@@ -110,10 +128,10 @@ public final class SearchStats {
     @Override
     public String toString() {
         return String.format(Locale.ROOT,
-                "SearchStats(cells %d, in reach %d, placeable %d, visible %d, viable %d, pruned %d, "
+                "SearchStats(cells %d, in reach %d, placeable %d, visible %d, unclickable %d, unaimable %d, pending %d, viable %d, pruned %d, "
                         + "estimates %d + %d self + %d protected, endangering %d, filtered %d, "
                         + "existing %d, inhibited %d, too young %d)",
-                cells, inReach, placeable, visible, viable, pruned, evaluated, selfEvaluated, protectedEvaluated,
+                cells, inReach, placeable, visible, unclickable, unaimable, pending, viable, pruned, evaluated, selfEvaluated, protectedEvaluated,
                 endangering, filtered, existing, inhibited, tooYoung);
     }
 }

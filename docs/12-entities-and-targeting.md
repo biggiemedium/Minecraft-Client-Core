@@ -97,7 +97,17 @@ per-tick one.
 
 A `Tracked<E>` is the game's object, from `get()`, plus what Core can measure
 itself: a position, a box, a facing, the eye height, `getVelocityX/Y/Z` from the
-last tick's move, `getTicksTracked()`, `extrapolate(n)`.
+last tick's move, `getTicksTracked()`, `extrapolate(n)`, and the last few ticks
+of where it was, `positionAgo(n)` — as many as the tracker's `setHistory` keeps
+(30 unless set), which is what `Core.prediction()` reads. `isFreshAgo(n)` says
+whether each of those positions was news: servers do not send every entity's
+position every tick, so a position that has not changed may mean no news. Give
+your `EntitySource` a `positionStamp` that changes whenever the server sends one
+and Core knows exactly; without it, each entity learns how often its positions
+arrive, and `setUpdateGap` sets the least it waits before calling stillness a stop.
+`projected(position)` gives a stand-in for the entity somewhere else — the same
+game object, its box moved — for asking "what if it were there" of anything that
+measures a `Tracked`, such as damage where a prediction says it will be.
 
 It is **one object per entity per tracker for as long as the tracker keeps
 it**, updated in place each tick and never recycled. Holding one across ticks is

@@ -23,6 +23,10 @@ import dev.px.combat.search.engine.SearchStats;
 import dev.px.combat.search.option.BedPlaceOption;
 import dev.px.combat.search.option.BedUseOption;
 import dev.px.combat.search.option.Trigger;
+import dev.px.combat.place.Click;
+import dev.px.combat.place.Clicks;
+import dev.px.combat.place.FaceRule;
+import dev.px.combat.search.rule.AimCost;
 import dev.px.combat.search.rule.Reach;
 import dev.px.combat.search.rule.Thresholds;
 import dev.px.combat.search.timing.AttackLog;
@@ -88,6 +92,8 @@ public final class BedTests {
         placing();
         bruteForce();
         using();
+        aiming();
+        strictPlacement();
         timing();
         sharedLog();
         searchBuild();
@@ -265,6 +271,59 @@ public final class BedTests {
         Checks.check("one out of use range is never chosen", arena.search(b -> b.useReach(Reach.of(1, 1))).findUse() == null);
         arena.nether = false;
         Checks.check("and in the Overworld, none is", search.findUse() == null);
+    }
+
+    private static void aiming() {
+        Arena arena = new Arena();
+        BedPlaceOption<Fighter> spot = arena.search(b -> b).findPlace();
+        Checks.check("a bed to place is aimed at the centre of the foot's cell",
+                spot.getAim().equals(spot.getFoot().center()) && spot.getAimCost() == 0d);
+        Vec3 bestAim = spot.getAim();
+        BedSearch<Fighter> elsewhere = arena.search(b -> b.placeAimCost(
+                (eye, at) -> at.equals(bestAim) ? Double.POSITIVE_INFINITY : 0d));
+        BedPlaceOption<Fighter> other = elsewhere.findPlace();
+        Checks.check("and one you cannot turn to gives way to a foot you can, every facing of it at once ("
+                        + elsewhere.getLastPlaceStats() + ")",
+                other != null && !other.getFoot().equals(spot.getFoot())
+                        && elsewhere.getLastPlaceStats().getUnaimable() >= 1);
+
+        Bed bed = Bed.of(Vec3i.of(1, 1, 1), Direction.EAST);
+        arena.blocks.bed(bed);
+        BedUseOption<Fighter> use = arena.search(b -> b).findUse();
+        Checks.check("a bed to use is aimed at the half to click",
+                use.getAim().equals(use.getCell().center()));
+        Arena headOnly = new Arena(BedPart.HEAD);
+        headOnly.blocks.bed(bed);
+        BedUseOption<Fighter> head = headOnly.search(b -> b).findUse();
+        Checks.check("the head, when only the head will do", head.getAim().equals(bed.getHead().center()));
+        BedSearch<Fighter> blind = arena.search(b -> b.useAimCost((eye, at) -> Double.POSITIVE_INFINITY));
+        Checks.check("and one you cannot turn to is left standing",
+                blind.findUse() == null && blind.getLastUseStats().getUnaimable() == 1);
+    }
+
+    private static void strictPlacement() {
+        Arena arena = new Arena();
+        Clicks clicks = Clicks.builder().support(arena.blocks::isSolid).replaceable(arena.blocks::isClear)
+                .faces(FaceRule.facingEye()).build();
+        BedSearch<Fighter> search = arena.search(b -> b.clicks(clicks));
+        List<BedPlaceOption<Fighter>> beds = search.findPlaces(4);
+        Vec3 eye = arena.eye();
+        boolean faced = !beds.isEmpty();
+        for (BedPlaceOption<Fighter> bed : beds) {
+            Click click = bed.getClick();
+            faced &= click != null && click.getCell().equals(bed.getFoot())
+                    && Direction.fromYaw(click.getRotation(eye).getYaw()) == bed.getFacing()
+                    && bed.getAim().equals(click.getHit());
+        }
+        Checks.check("with click rules, a bed is placed by a click into its foot that, looked along, faces it the "
+                + "way it should (" + beds + ")", faced);
+        Checks.check("without them, no click", arena.search(b -> b).findPlace().getClick() == null);
+
+        Bed standing = Bed.of(Vec3i.of(1, 1, 1), Direction.EAST);
+        arena.blocks.bed(standing);
+        BedUseOption<Fighter> use = arena.search(b -> b.clicks(clicks)).findUse();
+        Checks.check("and a bed is used by clicking the half to use (" + (use == null ? null : use.getClick()) + ")",
+                use != null && use.getClick() != null && use.getClick().getBlock().equals(use.getCell()));
     }
 
     private static void timing() {
