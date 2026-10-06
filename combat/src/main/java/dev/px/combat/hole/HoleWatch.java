@@ -1,18 +1,20 @@
 package dev.px.combat.hole;
 
-import dev.px.combat.world.Obstructions;
 import dev.px.core.entity.Tracked;
 import dev.px.core.movement.prediction.Future;
 import dev.px.core.movement.prediction.Prediction;
 import dev.px.core.movement.prediction.PredictionService;
 import dev.px.core.movement.prediction.Scenario;
 import dev.px.core.util.Validate;
+import dev.px.core.world.Obstructions;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.DoubleSupplier;
 import java.util.function.IntSupplier;
+import java.util.function.ToDoubleFunction;
 
 /**
  * Which holes an entity might get into, and when: what an auto-fill, a surround
@@ -69,7 +71,7 @@ public final class HoleWatch {
     private final Obstructions obstructions;
     private final IntSupplier horizon;
     private final DoubleSupplier radius;
-    private final DoubleSupplier prior;
+    private final ToDoubleFunction<Tracked<?>> prior;
     private final int maxHoles;
 
     private HoleWatch(Builder builder) {
@@ -93,8 +95,21 @@ public final class HoleWatch {
      */
     public List<HoleEntry> watch(Tracked<?> entity) {
         Validate.notNull(entity, "entity");
+        return assess(entity, finder.around(entity.getPosition(), radius.getAsDouble()));
+    }
+
+    /**
+     * {@link #watch}, about holes you found yourself: around you, say, rather than
+     * around {@code entity}.
+     *
+     * @return those of {@code holes} it could reach within the horizon, as
+     *         {@link #watch} orders them; empty when there are none
+     */
+    public List<HoleEntry> assess(Tracked<?> entity, Collection<Hole> holes) {
+        Validate.notNull(entity, "entity");
+        Validate.notNull(holes, "holes");
         int ticks = Math.max(1, horizon.getAsInt());
-        List<Hole> near = finder.around(entity.getPosition(), radius.getAsDouble());
+        List<Hole> near = new ArrayList<>(holes);
         if (near.isEmpty()) {
             return Collections.emptyList();
         }
@@ -115,7 +130,7 @@ public final class HoleWatch {
         }
 
         Scenario[] heading = new Scenario[reachable.size()];
-        double lean = prior.getAsDouble();
+        double lean = prior.applyAsDouble(entity);
         for (int i = 0; i < heading.length; i++) {
             Hole hole = reachable.get(i).hole;
             Scenario toward = Scenario.toward("into " + hole, hole.getCentre());
@@ -177,7 +192,7 @@ public final class HoleWatch {
         private Obstructions obstructions = Obstructions.NONE;
         private IntSupplier horizon;
         private DoubleSupplier radius;
-        private DoubleSupplier prior = () -> 1d;
+        private ToDoubleFunction<Tracked<?>> prior = entity -> 1d;
         private int maxHoles = DEFAULT_MAX_HOLES;
 
         private Builder() {
@@ -228,6 +243,16 @@ public final class HoleWatch {
          * on why the evidence alone cannot always tell.
          */
         public Builder prior(DoubleSupplier prior) {
+            Validate.notNull(prior, "prior");
+            this.prior = entity -> prior.getAsDouble();
+            return this;
+        }
+
+        /**
+         * {@link #prior(DoubleSupplier)}, decided per entity: lean further toward
+         * holes for someone low on health, say, who is likelier to run for one.
+         */
+        public Builder priorOf(ToDoubleFunction<Tracked<?>> prior) {
             this.prior = Validate.notNull(prior, "prior");
             return this;
         }

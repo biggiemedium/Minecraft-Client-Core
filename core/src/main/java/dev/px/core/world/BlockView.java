@@ -1,12 +1,13 @@
-package dev.px.combat.world;
+package dev.px.core.world;
 
 import dev.px.core.math.Vec3i;
 
 /**
- * Your game's blocks, as far as combat needs them. One small class per version.
+ * Your game's blocks, as lines through the world see them: what is in each
+ * cell. One small class per version.
  *
  * <pre>{@code
- * public final class LegacyBlocks implements BlockView, CellTest {
+ * public final class LegacyBlocks implements BlockView {
  *     public BlockShape shapeAt(int x, int y, int z) {
  *         IBlockState state = mc.theWorld.getBlockState(new BlockPos(x, y, z));
  *         return shapes.computeIfAbsent(state, this::shapeOf);   // build once per state, reuse
@@ -14,9 +15,15 @@ import dev.px.core.math.Vec3i;
  * }
  * }</pre>
  *
- * <p>Return the shape your game's explosion rays are stopped by. Core decides
- * nothing about which blocks those are: a version that changes it changes only
- * this method.
+ * <p>Return the shape that stops a line through the cell in your game: an
+ * explosion's rays, a line of sight, a reach check. Core decides nothing about
+ * which blocks those are; a version that changes it changes only this method.
+ * {@link Rays} walks a line through it.
+ *
+ * <p>The same seam as {@link dev.px.core.movement.simulation.CollisionSpace} and
+ * {@link dev.px.core.util.spatial.PathSpace}, each asking the one question its
+ * algorithm needs: boxes to sweep a hitbox against, passable cells to search,
+ * and here, shapes for a line to cross.
  *
  * <p>Called often &mdash; dozens of times per ray &mdash; on the game thread.
  * Return shared {@link BlockShape} instances rather than building new ones.
@@ -24,16 +31,16 @@ import dev.px.core.math.Vec3i;
 @FunctionalInterface
 public interface BlockView {
 
-    /** @return what stops an explosion's rays in this cell; {@link BlockShape#EMPTY} for nothing */
+    /** @return what stops a line through this cell; {@link BlockShape#EMPTY} for nothing */
     BlockShape shapeAt(int x, int y, int z);
 
     /** A world with nothing in it, for tests and for ignoring terrain. */
     BlockView EMPTY = (x, y, z) -> BlockShape.EMPTY;
 
     /**
-     * These blocks with {@code cells} empty: the world as an explosive that is
-     * itself a block sees it, once it is gone. A bed is removed before it
-     * explodes, so its own cells must not stop its rays.
+     * These blocks with {@code cells} empty: the world as something that is
+     * itself a block sees it, once it is gone. A block that explodes is removed
+     * first, so its own cells must not stop its rays.
      *
      * @param cells a few cells; each lookup checks every one
      */

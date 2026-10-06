@@ -16,7 +16,7 @@ tell you which rule it was.
 **Status.** The rules layer, the search — where to place, what to break, the
 best few places, every threshold and timing rule, protecting friends, your own
 filters, ranking by what turning costs you, looking ahead, placing then breaking, and strict placement — for
-crystals and beds, finding holes and predicting who gets into one, planning block placements, the damage
+crystals, beds and respawn anchors, finding holes and predicting who gets into one, planning block placements, the damage
 monitor and test vectors are done. See
 [Not yet included](#not-yet-included) for what comes next.
 
@@ -38,7 +38,7 @@ Without Gradle, copy `combat/src/main/java/dev/px/combat` alongside Core's sourc
 2. [Explosions](#2-explosions)
 3. [Crystals](#3-crystals)
 4. [Searching](#4-searching)
-5. [Beds](#5-beds)
+5. [Beds and respawn anchors](#5-beds-and-respawn-anchors)
 6. [Holes](#6-holes)
 7. [Placing blocks](#7-placing-blocks)
 8. [The damage monitor](#8-the-damage-monitor)
@@ -69,7 +69,10 @@ no game number ever slips in as a default.
 
 ## 1. Your world
 
-Combat sees blocks through one interface you implement per version:
+Combat sees blocks through Core's [`world`](../docs/13-package-map.md) package —
+`BlockView`, `BlockShape`, `CellTest`, `Rays` and `Obstructions` live in Core, so
+every library on it shares the same view of your world. You implement one
+interface per version:
 
 ```java
 public final class MyBlocks implements BlockView {
@@ -83,7 +86,7 @@ public final class MyBlocks implements BlockView {
 }
 ```
 
-A `BlockShape` is what stops an explosion's rays in a cell: `BlockShape.EMPTY`,
+A `BlockShape` is what stops a line through a cell — for combat, an explosion's rays: `BlockShape.EMPTY`,
 `BlockShape.FULL`, or boxes relative to the cell:
 
 ```java
@@ -145,8 +148,8 @@ estimate.getExposure();    // 0 to 1
 estimate.getDistance();
 ```
 
-The same model serves crystals and beds now, and anchors later — they differ only
-in their `Explosive`. A target beyond the falloff's range costs no raycasting at
+The same model serves crystals, beds and respawn anchors — they differ only in
+their `Explosive`. A target beyond the falloff's range costs no raycasting at
 all.
 
 ### Writing a profile for your version
@@ -680,8 +683,7 @@ BedSearch<LivingEntity> beds = BedSearch.<LivingEntity>builder() /* ... */ .log(
 Without `.log(...)`, each search keeps its own, ticked by `.bus(...)` or by
 `tick()`, as before.
 
-**Your own explosive.** Respawn anchors, or whatever a version adds next, are a
-device of yours: implement `PlaceDevice` and `UseDevice`, then call
+**Your own explosive.** Whatever a version adds next is a device of yours: implement `PlaceDevice` and `UseDevice`, then call
 `ExplosiveSearch.findPlace(device)` (or `findPlaces(device, n)`) and
 `findUse(device)`. Every threshold, protection, your filters, the branch and
 bound and the timing come with it. `getEngine()` on either search
@@ -689,7 +691,7 @@ hands you an engine with the same settings.
 
 ---
 
-## 5. Beds
+## 5. Beds and respawn anchors
 
 Beds explode when used in the Nether, the End, or a dimension where they are
 disabled. `BedRules` is their counterpart of `CrystalRules`, and `BedSearch` the
@@ -799,6 +801,81 @@ The scan, the bound, branch and bound, every threshold and trigger are the
 crystal search's, unchanged. The test suite checks branch and bound against a
 brute-force search in 20 random layouts with beds too.
 
+### Respawn anchors
+
+From the [wiki](https://minecraft.wiki/w/Respawn_Anchor), for current Java:
+
+- Using a glowstone **block** on an anchor adds a charge, up to four.
+- Using a **charged** anchor in the Overworld, the End, or a dimension where
+  anchors are disabled makes it explode, **power 5**, setting fire. The anchor is
+  destroyed, "similar to when a bed is used in the Nether".
+- Shields block its explosion since 1.19.3 — your `Mitigation`'s, as for crystals.
+
+The wiki does not say where the explosion is centred, nor which held items charge
+an anchor rather than set it off. The first is a rule you give; the second is
+your module's, along with every item switch.
+
+```java
+AnchorRules<LivingEntity> anchors = AnchorRules.<LivingEntity>builder()
+        .placement(AnchorPlacement.clearance(Game::isReplaceable))  // .nextTo(Game::isSolid) without click rules
+        .explodingAt(0.5, 0.5, 0.5)                                 // from the block's corner
+        .explodesWhen(() -> !Game.anchorsWork())                    // your game knows the dimension
+        .lookup(Game::anchorChargesAt)                              // AnchorLookup.NONE for no anchor
+        .explosive(Explosive.of("respawn anchor", 5))
+        .model(explosions)                                          // the same model as crystals and beds
+        .blocks(blocks)
+        .obstructions(Obstructions.of(Core.entities(), players))
+        .build();
+
+AnchorSearch<LivingEntity> search = AnchorSearch.<LivingEntity>builder()
+        .rules(anchors)
+        .entities(Core.entities())
+        .targets(Core.targets(), enemies)
+        .vitals(vitals)
+        .placeReach(Reach.of(5, 3))
+        .useReach(Reach.of(5, 3))
+        .thresholds(thresholds)
+        .clicks(clicks)                                             // optional: strict faces, hit vectors
+        .log(log)                                                   // shared with crystals and beds
+        .build();
+
+AnchorUseOption<LivingEntity> standing = search.findUse();
+if (standing != null) {
+    if (standing.getChargesNeeded() > 0) { holdGlowstone(); use(standing.getCell()); }
+    holdSomethingElse(); use(standing.getCell());
+    search.used(standing.getAnchor());
+}
+AnchorPlaceOption<LivingEntity> spot = search.findPlace();
+if (spot != null) {
+    holdAnchor(); place(spot.getClick());                           // into the cell
+    holdGlowstone(); use(spot.getUseClick());                       // on the anchor
+    holdSomethingElse(); use(spot.getUseClick());
+    search.used(spot.getCell());
+}
+```
+
+What is an anchor's own:
+
+- **Only where anchors explode.** While `explodes()` is false — the Nether —
+  nothing is found.
+- **The anchor is gone when it explodes.** It is a whole block with the explosion
+  inside it, so every prediction is made with its cell empty, as for beds.
+- **One spot per cell**, aimed at the cell. With click rules a spot needs a click
+  to place it and a click on the anchor once placed (`getUseClick()`).
+- **In one tick or over several.** By default the anchor is placed, charged and
+  set off in one tick, so what already went off this tick counts against it.
+  A server that takes one click a tick needs three: set `oneTick(() -> false)`,
+  call `placed(spot)` once it is down, and `findUse()` finds it on the next ticks,
+  empty and yours (`isOwn()`), with `getChargesNeeded()` saying a charge comes
+  first. `planPlaces(n)` gives several anchors to place together this way.
+- **Standing anchors** are found by a scan with your `AnchorLookup`, charged or
+  empty (`useEmpty(() -> false)` for charged only), and remembered by cell for
+  inhibit, whatever their charges.
+- **No minimum age**, as for beds.
+
+Branch and bound is checked against brute force in 20 random layouts with
+anchors too.
+
 ---
 
 ## 6. Holes
@@ -862,6 +939,66 @@ Keep the horizon at least three ticks under your trackers' history: futures are
 weighed by playing them from that far back. Friends work the same way — watch
 them too, and never fill a hole a friend is likely to reach.
 
+`assess(entity, holes)` does the same for holes you found yourself — around you,
+say, rather than around them — and `priorOf(entity -> ...)` leans per entity.
+
+### Filling holes before an enemy gets in
+
+`HoleFill` is the search an auto-fill would otherwise do by hand, built like the
+crystal search: it finds the best few holes to fill within your place range, and
+your client keeps control of every setting, filter and ranking. What to fill them
+with — obsidian, webs, whatever you hold — and how to place them is yours.
+
+```java
+HoleFill<LivingEntity> search = HoleFill.<LivingEntity>builder()
+        .finder(new HoleFinder(holeRules))
+        .prediction(Core.prediction())
+        .entities(Core.entities())
+        .targets(Core.targets(), enemies)
+        .protect(friends)                                         // never a hole a friend is heading for
+        .placeReach(Reach.of(placeRange::getDouble, wallRange::getDouble))
+        .blocks(myBlocks)
+        .horizon(() -> 15)
+        .fillDelay(() -> pingTicks() + placeDelay.getInt())       // until your fill lands
+        .minChance(minChance::getDouble)
+        .prior(enemy -> enemy.getHealth() < 8 ? 2 : 1)            // weak players run for holes
+        .protectOwn(selfProtect::isOn)                            // optional: keep the hole you are heading for
+        .escapeRadius(() -> escape.isOn() ? escapeRange.getDouble() : 0)   // optional: keep holes near you
+        .clicks(strictClicks)                                     // optional: only holes your server lets you fill
+        .filter(fill -> fill.getTiming() != FillOption.Timing.LATE)
+        .bus(Core.bus())
+        .build();
+
+for (FillOption<LivingEntity> fill : search.findFills(fillsPerTick.getInt())) {
+    Plan plan = planner.plan(eye, fill.getCells(), looking);     // obsidian or webs: your planner, your item
+    place(plan);
+    search.filled(fill);                                        // not offered again while the server catches up
+}
+```
+
+How it decides:
+
+1. **Holes in reach** — every cell within your place range, past the wall range
+   in sight, and with `Clicks`, every cell with a click your server accepts.
+2. **Kept** — holes within your escape radius, if you set one; the hole you are
+   in or likely heading for, if you protect your own; any a friend is in or likely
+   heading for; any you filled that the server has not shown yet.
+3. **Threatened** — each enemy predicted against the holes left, with a "heads
+   for it" future per hole. A hole is offered for the enemy who would be in it
+   soonest with at least the minimum chance; one an enemy is already in, or
+   someone else is in, is not.
+4. **Timed** against your fill delay — `SAFE` when your fill lands before they
+   could possibly be in, `RACE` before they likely are, `LATE` after — with the
+   slack: how many ticks you could still wait.
+5. **Yours** — your filters, then the ranking: anything in time before anything
+   late, then the soonest, then the likeliest, unless you `rank` them yourself.
+
+Each `FillOption` lists the cells to fill, the one the enemy comes to first first
+— all of a double or quad, since filling one leaves a smaller hole — and with
+`Clicks`, a click for each. `getLastStats()` says why every hole left out was
+left out. Fills share pending placements with your crystal search through a
+shared `AttackLog`, so neither places where the other just did.
+
 ---
 
 ## 7. Placing blocks
@@ -905,6 +1042,29 @@ Combine them with `and`, or write your own for a check none of these makes.
 `airPlace(...)` lets a cell with nothing beside it be clicked on itself, for
 servers that allow it.
 
+### Presets: one style per server
+
+How careful to be is one value, `PlacementStyle`: which faces, where on them,
+whether against nothing, how many a tick, how many supports. Save one per server
+your client plays on and hand it to every module that places.
+
+```java
+PlacementStyle relaxed = PlacementStyle.vanilla(reach, blocks);   // any face in reach, as many a tick as you like
+PlacementStyle careful = PlacementStyle.strict(reach, blocks);    // faces toward you, seen, in reach; one a tick
+
+PlacementStyle myStrictServer = careful.withHit(HitPoint.NEAREST).withSupports(1);   // yours, named as you like
+
+PlacementPlanner planner = myStrictServer.planner(
+        myStrictServer.clicks(Game::isSolid, Game::isAirOrReplaceable),
+        Obstructions.of(Core.entities(), players)).build();
+```
+
+`strict` is for servers whose anticheat replays your look ray against every
+click: a face turned toward you, seen along a clear line, in reach, never in mid
+air, and one placement a tick, since one rotation is sent a tick. It names no
+anticheat — it is the library's own `FaceRule`s put together — so start from it
+for whichever your server runs and change what it needs.
+
 ### Planning several a tick
 
 ```java
@@ -927,7 +1087,118 @@ tick counts as there for every cell after it, so a bridge builds out over a drop
 each block clicked against the last. A cell with nothing to click gets supports
 beside it first — below tried first — up to `supports` deep. Cells already
 filled, with someone in them, unreachable, or past the limit are left out, each
-with its reason in `getSkipped()`.
+with its reason in `getSkipped()`. When the limit leaves no room for a cell and
+its supports, the supports are started with what is left, so at one a tick the
+most important cell is still built toward, a block at a time, rather than passed
+over for a lesser one.
+
+### Shapes: what to place
+
+`Shapes` gives the cells around a box that modules fill: `occupied` (every cell
+it is in), `feet`, `head`, `around` (beside its feet: a surround), `above` (over
+its head: a trap's roof), and `union` to join them. A player on a block edge is
+in two cells and on a corner in four, and every shape follows. Give it the box
+where the entity will be — `lookahead.at(enemy, ticks).getBox()` — to place where
+it is going.
+
+An auto-web is a shape and a planner:
+
+```java
+PlacementPlanner webs = PlacementPlanner.builder()
+        .clicks(webClicks)                                       // replaceable: air, not a web already
+        .obstructions(Obstructions.of(Core.entities()))          // a web goes into a player: only you are in the way
+        .perTick(() -> 2)
+        .build();
+
+Tracked<? extends LivingEntity> soon = lookahead.at(enemy, placeTicks());   // where they will be when it lands
+Plan plan = webs.plan(eye, Shapes.union(Shapes.feet(soon.getBox()), Shapes.head(soon.getBox())), looking);
+```
+
+Webs have no collision box, so the server lets one go into a player: give the
+planner an `Obstructions` of only you (`Obstructions.of(entities)` with no
+trackers), and it never webs you but will web them. Their feet web is clicked
+against the floor; their head web against the feet web just planned. When to web
+— an enemy in a hole, or about to enter one — is your module's, from `HoleWatch`.
+
+For a target whose way is less certain, `Occupancy` turns a prediction into
+cells: how likely they are in each over a span of ticks, and the first tick they
+could be. Every future counts its weight once per cell.
+
+```java
+Occupancy soon = Occupancy.of(Core.prediction().predict(enemy, 10), placeTicks(), placeTicks() + 3);
+Plan plan = webs.plan(eye, soon.likelyCells(0.3), looking);      // soonest first, then likeliest
+```
+
+### Trapping a player
+
+`TrapSearch` is the search an auto-trap would otherwise do by hand: who to trap,
+which cells, in what order, and this tick's clicks. What to place with — obsidian,
+webs, anything — is your module's.
+
+```java
+TrapSearch<LivingEntity> search = TrapSearch.<LivingEntity>builder()
+        .prediction(Core.prediction())
+        .entities(Core.entities())
+        .targets(Core.targets(), enemies)
+        .protect(friends)                                         // never trapped, whatever the selector says
+        .planner(style.planner(clicks, Obstructions.of(Core.entities(), players)).build())
+        .pattern(() -> antiStep.isOn() ? TrapPattern.ANTI_STEP : TrapPattern.FULL)
+        .placeDelay(() -> pingTicks() + placeDelay.getInt())
+        .looking(rotations::getServerRotation)
+        .bus(Core.bus())
+        .build();
+
+TrapOption<LivingEntity> trap = search.findTrap();
+if (trap != null) {
+    place(trap.getPlan());
+    search.placed(trap);                                          // pending until the server shows them
+}
+```
+
+**Patterns.** `TrapPattern.FULL` is a ring at the feet, a ring at the head and a
+roof; `TOP_ONLY` the head ring and roof; `ANTI_STEP` adds a ring above the head
+ring, so nothing is low enough to step up onto. Build your own with
+`TrapPattern.builder()`, and `offset(part, dx, dy, dz)` adds cells at an offset
+from each cell their feet are in. Every pattern follows a player across two or
+four columns, and never includes a cell they are in.
+
+**The likeliest way out first.** `TrapOrder.ESCAPES_FIRST`, unless you set
+`BOTTOM_UP`:
+
+- *Walled in at the feet, as in a hole* — the only way out is a jump, so the roof
+  goes first, then the head ring. A roof alone already holds them.
+- *In the open* — walking out is quickest: the feet ring first, the side they are
+  likeliest to walk out of first, by their predicted futures; then the roof, so
+  they cannot jump onto the ring; then the head ring.
+
+A roof has nothing to click against. The planner gives it supports — a block on
+the head ring, one on top of it, then the roof against that — so give the
+search's planner `supports` of 2 (both presets do) and obstructions that include
+players, so no support goes into their head.
+
+**Who.** A target walled in, or standing still, is trapped around where they
+stand. Someone moving — or not seen long enough to tell — is left alone unless
+`trapMoving` is on: a trap is built around where someone is, and a moving player
+is rarely there when it lands. With it on, they are trapped around where the
+prediction puts them `placeDelay` ticks ahead.
+
+**Never into them.** A solid block inside a player is refused. A cell they stand
+in now, or are in when the block lands with at least `avoidChance` (0.1 unless
+set) across their futures, waits: it is in `getDeferred()`, not the plan.
+
+**Strict servers.** Give the search a planner from a `PlacementStyle` with one a
+tick, and each tick goes on the cell that matters most. In a hole that is three
+ticks for the roof — head ring, the block above it, the roof — then the rest of
+the head ring.
+
+A `TrapOption` has the whole trap in order (`getCells()`, each with its part),
+what is still missing, what waits, this tick's plan, whether they are walled in
+(`isEnclosed()`) and whether the roof is up or going up this tick (`isRoofed()`).
+`findTraps(n)` gives up to `n`, the trap nearest done first unless you `rank`
+them; `filter`s have the last word, `maxTargets` caps who is weighed, and
+`getLastStats()` says why anyone was left out — moving, sealed already,
+unplaceable or filtered. Share an `AttackLog` with your other searches through
+`log(...)` so traps, fills and crystals keep out of each other's cells.
 
 ---
 
@@ -1123,30 +1394,31 @@ the profile matches the game.
 
 | Package | Classes | What it is |
 |---|---|---|
-| `combat.world` | `BlockView`, `BlockShape`, `CellTest`, `Rays`, `Obstructions` | your world as combat needs it |
 | `combat.explosion` | `ExplosionModel`, `Explosive`, `DamageEstimate` | how any explosion hurts a target, with the working shown |
 | `combat.explosion.rule` | `Exposure`, `SampleGrid`, `Falloff`, `Mitigation` | the four rules a model is made of |
 | `combat.explosion.state` | `TargetState`, `StateCapture`, `StateMitigation` | captured target values, so one mitigation works live and replayed |
 | `combat.crystal` | `CrystalRules`, `CrystalBody`, `Placement` | where a crystal goes, where it sits, what it does |
 | `combat.bed` | `BedRules`, `Bed`, `BedPart`, `BedPlacement`, `BedLookup` | where a bed goes, finding standing ones, what one does |
+| `combat.anchor` | `AnchorRules`, `Anchor`, `AnchorPlacement`, `AnchorLookup` | where a respawn anchor goes, finding standing ones with their charges, what one does |
 | `combat.monitor` | `DamageMonitor`, `Vitals`, `DamageSample`, `DamageReport`, `DamageDriftEvent`, `SampleRecorder` | checks predictions against the real game |
 | `combat.vector` | `TestVector`, `VectorSet`, `BlockSnapshot` | real explosions, kept as test cases |
 | `combat.vector.capture` | `VectorRecorder` | records vectors from the monitor while you play |
 | `combat.vector.io` | `VectorJson` | one JSON file per set |
 | `combat.vector.replay` | `VectorReplay`, `ReplayResult`, `VectorOutcome` | runs a profile against saved explosions |
-| `combat.search` | `CrystalSearch`, `BedSearch` | where to place, what to break or use |
+| `combat.search` | `CrystalSearch`, `BedSearch`, `AnchorSearch` | where to place, what to break or use |
 | `combat.search.engine` | `ExplosiveSearch`, `Device`, `PlaceDevice`, `UseDevice`, `Found`, `SearchStats` | the search every explosive shares, and what each search cost |
 | `combat.search.rule` | `Thresholds`, `Reach`, `ReachPoint`, `Score`, `AimCost`, `OptionFilter` | your aura's settings: what is worth doing, how far, how it is ranked, what turning is worth, and your own last word |
-| `combat.search.option` | `Option`, `PlaceOption`, `BreakOption`, `BedPlaceOption`, `BedUseOption`, `Trigger`, `Proposal`, `Harm` | what the search found and why, and what a filter is shown |
+| `combat.search.option` | `Option`, `PlaceOption`, `BreakOption`, `BedPlaceOption`, `BedUseOption`, `AnchorPlaceOption`, `AnchorUseOption`, `Trigger`, `Proposal`, `Harm` | what the search found and why, and what a filter is shown |
 | `combat.search.timing` | `AttackLog` | inhibit, and what has been dealt this tick, shareable across searches |
-| `combat.hole` | `HoleRules`, `HoleFinder`, `Hole`, `HoleShape`, `HoleWatch`, `HoleEntry` | what a hole is in your game, finding them, and who might get into one, likely and possible |
-| `combat.place` | `Clicks`, `Click`, `FaceRule`, `HitPoint`, `PlacementPlanner`, `Plan` | how your server takes a click, and placing several blocks a tick |
+| `combat.hole` | `HoleRules`, `HoleFinder`, `Hole`, `HoleShape`, `HoleWatch`, `HoleEntry`, `HoleFill`, `FillOption`, `FillFilter`, `FillStats` | what a hole is in your game, finding them, who might get into one, and the best ones to fill first |
+| `combat.place` | `Clicks`, `Click`, `FaceRule`, `HitPoint`, `PlacementStyle`, `PlacementPlanner`, `Plan`, `Shapes`, `Occupancy` | how your server takes a click, a preset per server, placing several blocks a tick, which cells to fill, and where a target is likely to be |
+| `combat.trap` | `TrapSearch`, `TrapPattern`, `TrapOrder`, `TrapOption`, `TrapFilter`, `TrapStats` | who to trap, which cells, the likeliest way out first, and this tick's placements |
 
 ---
 
 ## 12. Verifying
 
-`dev.px.combat.test.CombatSmokeTest` runs **374 checks** in a plain JVM — no
+`dev.px.combat.test.CombatSmokeTest` runs **496 checks** in a plain JVM — no
 Minecraft, no window. The "game" is a few plain classes and a block grid written
 by the tests, with its own version profile written the way a client would, and
 the checks prove the library does what any profile says.
@@ -1158,30 +1430,31 @@ core/build/classes/java/main:core/build/classes/java/testFixtures:<gson.jar> \
      dev.px.combat.test.CombatSmokeTest
 ```
 
-The suites share Core's test fixtures — `Checks`, `FakePlatform`, `RecordingLogger`,
+Block shapes, rays and obstructions are Core's, and checked by Core's `WorldTests`. The suites share Core's test fixtures — `Checks`, `FakePlatform`, `RecordingLogger`,
 `GridCollisionSpace` and `MovementRig` —
 through `testFixtures(project(':core'))`.
 
 | Suite | Covers |
 |---|---|
-| `CrystalRulesTests` | block shapes and segment tests, including what counts as touching; rays through walls, over and through slabs, from inside a block; uniform grids; exposure in the open, behind a wall, partly covered; a model put together from its rules, with range culling, the formula's minimum, mitigation order and the measure point; placement by clearance, with one or two clear blocks and entities inside, touching and above; the crystal body; `CrystalRules` from a base and from an existing crystal, behind a wall, and builders naming what is missing |
+| `CrystalRulesTests` | uniform grids; exposure in the open, behind a wall, partly covered; a model put together from its rules, with range culling, the formula's minimum, mitigation order and the measure point; placement by clearance, with one or two clear blocks and entities inside, touching and above; the crystal body; `CrystalRules` from a base and from an existing crystal, behind a wall, and builders naming what is missing |
 | `DamageMonitorTests` | a matching model trusted; a wrong formula, wrong armour and wrong exposure each noticed and blamed on the right rule; several explosions in one tick; a health update handled before the explosion; recovering, hidden, untrusted, leaving and out-of-range targets; pops as lower bounds and unexpected pops; one disturbed sample not swaying the verdict; ticking from the bus, closing and clearing |
 | `VectorTests` | target state; block snapshots at negative coordinates, palettes and rebuilding; recording from the monitor, with state, blocks and target, thrown-away samples, same-tick merging and capacity; JSON written and read back equal, other formats and newer versions refused; replaying the right profile from the saved file alone, and a wrong formula, wrong armour and wrong sampling each failing and blamed on the right rule; tolerance; popped vectors |
 | `SearchTests` | placing on a floor of bases with the scan's counts; branch and bound picking what a brute-force search picks in 30 random layouts while pruning most candidates; the best few places, ordered, on their own bases, and the best four matching every option in 20 layouts; place range, the nearest-point measure and wall range; minimum damage, the self-damage cap, anti-suicide; lethal, its multiplier and its self-cap override, never for hidden health; faceplacing by health and by keybind, armour breaking; protecting a friend by cap and by margin, never for hidden health, never as a target, before the cut to `maxTargets`, against kills and breaks, cleared by the bound without raycasting, and refusing exactly what raycasting every friend refuses in 20 layouts; filters refusing, seeing the option and exact damage to friends only when asked, in order, on breaks too, choosing the right one of two enemies, and branch and bound staying exact under one in 15 layouts; picking the crystal to break, break range, minimum age; inhibit and the one-explosion-per-tick rule across ticks; breaking on spawn; balanced scoring; aiming — aim points, unaimable spots dropped before bounding, a turning cost traded against damage, bonuses, filters seeing the cost, separate place and break costs, spawn breaks, the angle cost, and the best one and best four matching every option in 40 layouts with costs, limits and bonuses; looking ahead — never asked without a delay, damage scored where the enemy will be against the real entity, your own damage and a friend walking into the blast looked ahead too, breaking by its own delay, Core's prediction as the lookahead, unreliable predictions left where they are; pending placements keeping the next off their room, expiring, shared through the log; a plan of places none in another's way; crystals that show up where you placed them yours, on break and on spawn; a listener hearing every estimate and each verdict; strict placement — a click on a face turned toward you, aimed at its hit, any face for a crystal unless your rules want the top, planned places with clicks; missing parts, no targets, ticking from the bus |
 | `BedTests` | a bed's cells and equality by position; the best three beds, ranked; placement with room, walls, entities on either half, floating, and support under both halves; finding standing beds by their heads; the bed's own cells hiding its explosion, and predictions made with them empty; placing in the Nether, one spot per facing, narrowed facings, nothing in the Overworld; branch and bound against brute force in 20 layouts; using the nearer usable half, head-only versions, use range; aiming at the foot's cell and at the half to click, and beds you cannot turn to; clicks into the foot that face the bed its way, and the half used; inhibit by position; one explosion a tick, across a crystal search and a bed search sharing a log; the monitor and recorder told the bed is gone; builders naming what is missing |
-| `PlaceTests` | every way into a hole, each on the face turned toward it; strict direction from the side; the nearest click and the least turn; clicking a block itself from above and below; air places; faces behind walls, out of reach and covered; hit points at the centre and nearest, relative hits; a surround planned two a tick in order, filled and occupied cells skipped with reasons, a bridge built out against itself, out-of-order cells unreachable, supports one and two deep counted against the limit |
+| `AnchorTests` | finding anchors with their charges, empty ones, equality, negative charges refused; placement with room, never into the floor or anyone in the block, mid air only without a support rule; the anchor's own cell hiding its explosion, predictions made with it empty, the floor still counting, the origin where your rules put it; rules naming what is missing; an anchor placed for the enemy, in reach, one spot a cell, the best three ranked, nothing where anchors do not explode; branch and bound against brute force in 20 layouts; a charged anchor set off, an empty one needing a charge, charged only when asked, use range, wall range in plain sight and behind a wall, none in the Nether; inhibit by cell whatever the charges, dealt damage recorded, a one-tick place counting against it; placing over several ticks — pending, then found empty and yours; clicks to place and to use, only the placing click over several ticks, none where your server would not take one, spots whose anchor could not then be clicked refused; missing parts |
+| `PlaceTests` | every way into a hole, each on the face turned toward it; strict direction from the side; the nearest click and the least turn; clicking a block itself from above and below; air places; faces behind walls, out of reach and covered; hit points at the centre and nearest, relative hits; a surround planned two a tick in order, filled and occupied cells skipped with reasons, a bridge built out against itself, out-of-order cells unreachable, supports one and two deep counted against the limit, started when the cell itself does not fit, before a later cell that would; shapes around a player in the middle of a block, on an edge and on a corner, a box filling one cell exactly, unions; webbing a player feet then head, refused for solid blocks, never into yourself, and ahead of a running target |
+| `HoleFillTests` | a hole an enemy heads for offered with its cells, chance and timing, safe with slack, holes nobody heads for and past your reach not; an enemy already in one too late; a double filled whole, nearest cell first; the best two ranked soonest first; escape holes kept only when set; your own hole kept only when protected; friends' holes kept, and friends never enemies even under an every-player selector; occupied holes; safe, race and late; pending fills and their wait; filters, your own ranking, clicks per cell and unclickable holes; a prior per enemy; missing parts |
+| `TrapTests` | full, top-only, anti-step and custom patterns, across two columns, never into the player; occupancy of someone still and someone walking, soonest first; vanilla and strict styles, fewer faces strictly, your own presets and their limit; a target in a hole roofed first, the roof stood on a head-ring block and the one above it, never on their head, then sealed and not offered; in the open the feet ring first, then the roof; bottom up and top only read live; strictly one a tick, roofed in three; moving and briefly-seen targets left alone, trapped where they will be when asked, the side they walk out of first, cells they stand in or likely will waiting, more with a warier avoid chance; pending traps and their wait; the trap nearest done first, friends never trapped, filters, your own ranking, `maxTargets`; out of reach, missing parts |
 | `HoleTests` | singles, doubles along x and z and quads found in an obsidian ground, and trenches, missing headroom and a dirt wall not; safe only with bedrock walls and floor; nearest first, radius, found by any cell, equal when found again, shapes to choose; in the hole by footprint and wall height; a walker heading for a hole likely in, no sooner than possible and near the likely tick; a runner passing it not; holes beyond the horizon left out; a speed hacker in sooner and possibly sooner, the sprint-over split, and a prior leaning toward holes; the hole it is in first, a hole someone else is in occupied; builders naming what is missing |
 
 ---
 
 ## Not yet included
 
-- **Respawn anchors** — a device on the shared engine: placing, charging with
-  glowstone, and exploding outside the Nether are not written yet.
 - **A fast path when nothing wins** — with every spot too weak (an enemy deep in
   a hole), pruning never starts and every viable spot is estimated: about twice a
   normal search on the test grid. Worth measuring on real worlds first.
-- **Melee and city** — later capabilities alongside the crystal search. Surround,
-  auto-fill and traps are modules on the placement planner and `HoleWatch`.
+- **Melee and city** — later capabilities alongside the crystal search. Auto-fill
+  and traps have their searches; surround is a module on the placement planner.
 - **Reference profiles** — whether to ship an optional `combat-vanilla` module of
   tested profiles per version is still open.

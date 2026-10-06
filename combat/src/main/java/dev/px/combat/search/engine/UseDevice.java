@@ -1,9 +1,9 @@
 package dev.px.combat.search.engine;
 
 import dev.px.combat.search.rule.Reach;
-import dev.px.combat.world.BlockView;
 import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
+import dev.px.core.world.BlockView;
 
 import java.util.function.Consumer;
 

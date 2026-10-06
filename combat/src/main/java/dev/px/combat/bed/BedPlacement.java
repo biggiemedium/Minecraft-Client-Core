@@ -1,10 +1,10 @@
 package dev.px.combat.bed;
 
-import dev.px.combat.world.CellTest;
-import dev.px.combat.world.Obstructions;
 import dev.px.core.math.Box;
 import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
+import dev.px.core.world.CellTest;
+import dev.px.core.world.Obstructions;
 
 /**
  * Whether a bed can be placed: your game's rule.

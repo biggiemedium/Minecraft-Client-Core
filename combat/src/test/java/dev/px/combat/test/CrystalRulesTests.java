@@ -10,10 +10,6 @@ import dev.px.combat.explosion.rule.Exposure;
 import dev.px.combat.explosion.rule.Falloff;
 import dev.px.combat.explosion.rule.Mitigation;
 import dev.px.combat.explosion.rule.SampleGrid;
-import dev.px.combat.world.BlockShape;
-import dev.px.combat.world.BlockView;
-import dev.px.combat.world.Obstructions;
-import dev.px.combat.world.Rays;
 import dev.px.core.entity.EntityService;
 import dev.px.core.entity.EntitySource;
 import dev.px.core.entity.EntityTracker;
@@ -23,6 +19,9 @@ import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.test.harness.Checks;
 import dev.px.core.test.harness.RecordingLogger;
+import dev.px.core.world.BlockShape;
+import dev.px.core.world.BlockView;
+import dev.px.core.world.Obstructions;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -58,8 +57,6 @@ public final class CrystalRulesTests {
     public static void run() {
         Checks.section("Crystal rules");
 
-        shapes();
-        rays();
         grids();
         exposure();
         model();
@@ -68,46 +65,7 @@ public final class CrystalRulesTests {
         rules();
     }
 
-    // ------------------------------------------------------------- blocks
-
-    private static void shapes() {
-        Checks.check("a full cell stops a line through it",
-                BlockShape.FULL.intersects(0, 0, 0, -1, 0.5, 0.5, 2, 0.5, 0.5));
-        Checks.check("and not one passing beside it", !BlockShape.FULL.intersects(0, 0, 0, -1, 1.5, 0.5, 2, 1.5, 0.5));
-        Checks.check("an empty cell stops nothing", !BlockShape.EMPTY.intersects(0, 0, 0, -1, 0.5, 0.5, 2, 0.5, 0.5));
-
-        BlockShape slab = BlockShape.of(Box.of(0, 0, 0, 1, 0.5, 1));
-        Checks.check("a slab stops a line through its half", slab.intersects(5, 0, 5, 4, 0.25, 5.5, 7, 0.25, 5.5));
-        Checks.check("and not one passing over it", !slab.intersects(5, 0, 5, 4, 0.75, 5.5, 7, 0.75, 5.5));
-        Checks.check("its boxes are relative to whichever cell it is in",
-                slab.intersects(-3, 10, 2, -4, 10.25, 2.5, -1, 10.25, 2.5));
-        Checks.check("a line starting inside a shape is stopped", BlockShape.FULL.intersects(0, 0, 0, 0.5, 0.5, 0.5, 9, 9, 9));
-        Checks.check("one along its top is not: a target is not hidden by the floor it stands on",
-                !BlockShape.FULL.intersects(0, 0, 0, -1, 1, 0.5, 2, 1, 0.5)
-                        && !BlockShape.FULL.intersects(0, 0, 0, 0.5, 1, 0.5, 0.5, 3, 0.5));
-        Checks.check("but one along its bottom is: so the seam inside a solid wall is solid",
-                BlockShape.FULL.intersects(0, 1, 0, -1, 1, 0.5, 2, 1, 0.5));
-        Checks.check("touching only an edge is not", !BlockShape.FULL.intersects(0, 0, 0, 2, 0, 0.5, 0, 2, 0.5));
-        Checks.check("shapes compare by their boxes",
-                BlockShape.of(Box.of(0, 0, 0, 1, 0.5, 1)).equals(slab) && BlockShape.of().equals(BlockShape.EMPTY));
-    }
-
-    private static void rays() {
-        Arena arena = new Arena();
-        for (int y = 0; y < 4; y++) {
-            arena.set(2, y, 0, BlockShape.FULL);
-        }
-        Checks.check("a wall stops a ray", !Rays.clear(Vec3.of(0.5, 1.5, 0.5), Vec3.of(4.5, 1.5, 0.5), arena));
-        Checks.check("over it, the ray is clear", Rays.clear(Vec3.of(0.5, 4.5, 0.5), Vec3.of(4.5, 4.5, 0.5), arena));
-        Checks.check("either way along it", !Rays.clear(Vec3.of(4.5, 1.5, 0.5), Vec3.of(0.5, 1.5, 0.5), arena));
-
-        Arena low = new Arena();
-        low.set(2, 0, 0, BlockShape.of(Box.of(0, 0, 0, 1, 0.5, 1)));
-        Checks.check("a ray over a slab is clear", Rays.clear(Vec3.of(0.5, 0.9, 0.5), Vec3.of(4.5, 0.9, 0.5), low));
-        Checks.check("one through it is not", !Rays.clear(Vec3.of(0.5, 0.3, 0.5), Vec3.of(4.5, 0.3, 0.5), low));
-        Checks.check("a point inside a block sees nothing, even itself",
-                !Rays.clear(Vec3.of(2.5, 1.5, 0.5), Vec3.of(2.5, 1.5, 0.5), arena));
-    }
+    // -------------------------------------------------------------- grids
 
     private static void grids() {
         List<Vec3> points = new ArrayList<>();

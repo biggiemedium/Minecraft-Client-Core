@@ -20,8 +20,6 @@ import dev.px.combat.vector.capture.VectorRecorder;
 import dev.px.combat.vector.io.VectorJson;
 import dev.px.combat.vector.replay.ReplayResult;
 import dev.px.combat.vector.replay.VectorReplay;
-import dev.px.combat.world.BlockShape;
-import dev.px.combat.world.BlockView;
 import dev.px.core.entity.EntityService;
 import dev.px.core.entity.EntitySource;
 import dev.px.core.entity.EntityTracker;
@@ -31,6 +29,8 @@ import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.test.harness.Checks;
 import dev.px.core.test.harness.RecordingLogger;
+import dev.px.core.world.BlockShape;
+import dev.px.core.world.BlockView;
 
 import java.io.IOException;
 import java.io.StringReader;

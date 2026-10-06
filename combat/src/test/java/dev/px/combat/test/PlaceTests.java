@@ -4,16 +4,24 @@ import dev.px.combat.place.Click;
 import dev.px.combat.place.Clicks;
 import dev.px.combat.place.FaceRule;
 import dev.px.combat.place.HitPoint;
-import dev.px.combat.place.Plan;
 import dev.px.combat.place.PlacementPlanner;
+import dev.px.combat.place.Plan;
+import dev.px.combat.place.Shapes;
+import dev.px.combat.search.rule.Lookahead;
 import dev.px.combat.search.rule.Reach;
-import dev.px.combat.world.BlockShape;
-import dev.px.combat.world.BlockView;
+import dev.px.core.entity.Tracked;
+import dev.px.core.math.Box;
 import dev.px.core.math.Direction;
 import dev.px.core.math.Vec2;
 import dev.px.core.math.Vec3;
 import dev.px.core.math.Vec3i;
+import dev.px.core.movement.simulation.MovementInput;
 import dev.px.core.test.harness.Checks;
+import dev.px.core.test.harness.GridCollisionSpace;
+import dev.px.core.test.harness.MovementRig;
+import dev.px.core.world.BlockShape;
+import dev.px.core.world.BlockView;
+import dev.px.core.world.Obstructions;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -39,6 +47,8 @@ public final class PlaceTests {
         rules();
         hitPoints();
         planning();
+        shapes();
+        webbing();
     }
 
     // --------------------------------------------------------------- clicking
@@ -202,6 +212,13 @@ public final class PlaceTests {
                         && supported.getSteps().get(1).getClick().getBlock().equals(Vec3i.of(4, 1, 4)));
         Plan tight = world.planner(FaceRule.ANY, 1, () -> 1, new HashSet<>()).plan(eye, Arrays.asList(high));
         Checks.check("a support counts against the tick's limit", tight.getSkipped().get(high) == Plan.Skip.LIMIT);
+        Checks.check("but the tick is not wasted: the support is started (" + tight + ")",
+                tight.getSteps().size() == 1 && tight.getSteps().get(0).isSupport()
+                        && tight.getSteps().get(0).getCell().equals(Vec3i.of(4, 1, 4)));
+        Plan crowded = world.planner(FaceRule.ANY, 1, () -> 1, new HashSet<>())
+                .plan(eye, Arrays.asList(high, Vec3i.of(-4, 1, -4)));
+        Checks.check("before a later cell that would fit whole: your order comes first",
+                crowded.getSteps().size() == 1 && crowded.getSteps().get(0).getCell().equals(Vec3i.of(4, 1, 4)));
         Vec3i higher = Vec3i.of(-4, 3, -4);
         Plan two_deep = world.planner(FaceRule.ANY, 2, () -> 10, new HashSet<>()).plan(eye, Arrays.asList(higher));
         Checks.check("two deep, two supports, stacked (" + two_deep + ")", two_deep.getSteps().size() == 3
@@ -215,6 +232,73 @@ public final class PlaceTests {
             missing = e.getMessage();
         }
         Checks.check("a planner without click rules says so", missing != null && missing.contains("clicks"));
+    }
+
+    // ----------------------------------------------------------------- shapes
+
+    private static void shapes() {
+        Box centred = Box.around(Vec3.of(0.5d, 1d, 0.5d), 0.6d, 1.8d);
+        Checks.check("a player in the middle of a block is in two cells, feet then head",
+                Shapes.occupied(centred).equals(Arrays.asList(Vec3i.of(0, 1, 0), Vec3i.of(0, 2, 0)))
+                        && Shapes.feet(centred).equals(Arrays.asList(Vec3i.of(0, 1, 0)))
+                        && Shapes.head(centred).equals(Arrays.asList(Vec3i.of(0, 2, 0))));
+        Checks.check("with four beside its feet, and one over its head",
+                Shapes.around(centred).size() == 4 && !Shapes.around(centred).contains(Vec3i.of(0, 1, 0))
+                        && Shapes.above(centred).equals(Arrays.asList(Vec3i.of(0, 3, 0))));
+
+        Box edge = Box.around(Vec3.of(1.0d, 1d, 0.5d), 0.6d, 1.8d);
+        Box corner = Box.around(Vec3.of(1.0d, 1d, 1.0d), 0.6d, 1.8d);
+        Checks.check("on an edge, its feet are in two cells and six are beside them",
+                Shapes.feet(edge).size() == 2 && Shapes.around(edge).size() == 6);
+        Checks.check("on a corner, four, and eight beside them",
+                Shapes.feet(corner).size() == 4 && Shapes.around(corner).size() == 8 && Shapes.occupied(corner).size() == 8);
+
+        Box flush = Box.of(0d, 1d, 0d, 1d, 2d, 1d);
+        Checks.check("a box exactly filling a cell is in that cell only, not the ones it touches",
+                Shapes.occupied(flush).equals(Arrays.asList(Vec3i.of(0, 1, 0))));
+        Checks.check("shapes join without repeats, in the order met",
+                Shapes.union(Shapes.feet(centred), Shapes.occupied(centred))
+                        .equals(Arrays.asList(Vec3i.of(0, 1, 0), Vec3i.of(0, 2, 0))));
+    }
+
+    private static void webbing() {
+        World world = new World();
+        world.ground(-10, 10);
+        Box target = Box.around(Vec3.of(0.5d, 1d, 0.5d), 0.6d, 1.8d);
+        Box me = Box.around(Vec3.of(3.5d, 1d, 0.5d), 0.6d, 1.8d);
+        Vec3 eye = Vec3.of(3.5d, 2.62d, 0.5d);
+        Clicks clicks = world.clicks(FaceRule.facingEye());
+
+        // A web has no collision box, so the server lets it go into a player: only you are in the way.
+        PlacementPlanner webs = PlacementPlanner.builder().clicks(clicks)
+                .obstructions(region -> region.intersects(me)).build();
+        Plan web = webs.plan(eye, Shapes.occupied(target));
+        Checks.check("webbing a player: their feet, then their head, the second clicked against the first (" + web + ")",
+                web.isComplete() && web.getSteps().size() == 2
+                        && web.getSteps().get(0).getClick().getBlock().equals(Vec3i.of(0, 0, 0))
+                        && web.getSteps().get(1).getClick().getBlock().equals(Vec3i.of(0, 1, 0)));
+
+        PlacementPlanner solid = PlacementPlanner.builder().clicks(clicks)
+                .obstructions(region -> region.intersects(target) || region.intersects(me)).build();
+        Checks.check("where a solid block would be refused, with them in it",
+                solid.plan(eye, Shapes.occupied(target)).getSkipped().get(Vec3i.of(0, 1, 0)) == Plan.Skip.OCCUPIED);
+        Checks.check("and never into yourself", webs.plan(eye, Shapes.occupied(me)).getSkipped()
+                .get(Vec3i.of(3, 1, 0)) == Plan.Skip.OCCUPIED);
+        Obstructions selfOnly = region -> region.intersects(me);
+        Checks.check("(an Obstructions of only you is the one to give)", !selfOnly.any(target) && selfOnly.any(me));
+
+        // Running: web where they will be when the web lands, not where they are.
+        MovementRig rig = new MovementRig(new GridCollisionSpace().floor(1d, -60, 60));
+        MovementRig.Body runner = rig.add(Vec3.of(0.5d, 1d, 0.5d), tick -> MovementInput.forward(-90f).withSprint(true));
+        for (int i = 0; i < 20; i++) {
+            rig.tick();
+        }
+        Tracked<?> now = rig.tracked(runner);
+        Tracked<?> soon = Lookahead.<Object>extrapolated().at(now, 4);
+        int nowX = Shapes.feet(now.getBox()).get(0).getX();
+        int soonX = Shapes.feet(soon.getBox()).get(Shapes.feet(soon.getBox()).size() - 1).getX();
+        Checks.check("a running target is webbed ahead of them: where the lookahead puts them (" + nowX + " now, "
+                + soonX + " when it lands)", soonX > nowX);
     }
 
     // ---------------------------------------------------------------- harness

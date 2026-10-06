@@ -13,10 +13,10 @@ import dev.px.combat.explosion.state.TargetState;
 import dev.px.combat.vector.BlockSnapshot;
 import dev.px.combat.vector.TestVector;
 import dev.px.combat.vector.VectorSet;
-import dev.px.combat.world.BlockShape;
 import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.util.Validate;
+import dev.px.core.world.BlockShape;
 
 import java.io.IOException;
 import java.io.Reader;

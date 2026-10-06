@@ -10,7 +10,6 @@ import dev.px.combat.monitor.DamageMonitor;
 import dev.px.combat.monitor.DamageReport;
 import dev.px.combat.monitor.DamageSample;
 import dev.px.combat.monitor.Vitals;
-import dev.px.combat.world.BlockView;
 import dev.px.core.entity.EntityService;
 import dev.px.core.entity.EntitySource;
 import dev.px.core.entity.EntityTracker;
@@ -22,6 +21,7 @@ import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.test.harness.Checks;
 import dev.px.core.test.harness.RecordingLogger;
+import dev.px.core.world.BlockView;
 
 import java.util.ArrayList;
 import java.util.List;

@@ -26,6 +26,7 @@ import dev.px.core.test.suite.ShaderTests;
 import dev.px.core.test.suite.ShapeTests;
 import dev.px.core.test.suite.SimulationTests;
 import dev.px.core.test.suite.SpatialTests;
+import dev.px.core.test.suite.WorldTests;
 import dev.px.core.test.suite.HookTests;
 import dev.px.core.test.suite.TargetingTests;
 import dev.px.core.test.suite.TimelineTests;
@@ -61,6 +62,7 @@ public final class CoreSmokeTest {
         MathTests.run();
         UtilTests.run();
         SpatialTests.run();
+        WorldTests.run();
         MovementTests.run();
         ConfigStorageTests.run();
 

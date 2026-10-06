@@ -1,14 +1,14 @@
 package dev.px.combat.place;
 
 import dev.px.combat.search.rule.Reach;
-import dev.px.combat.world.BlockView;
-import dev.px.combat.world.CellTest;
-import dev.px.combat.world.Rays;
 import dev.px.core.math.Box;
 import dev.px.core.math.Direction;
 import dev.px.core.math.Vec3;
 import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
+import dev.px.core.world.BlockView;
+import dev.px.core.world.CellTest;
+import dev.px.core.world.Rays;
 
 /**
  * Which clicks your server accepts: a face of a block, clicked at a point, from

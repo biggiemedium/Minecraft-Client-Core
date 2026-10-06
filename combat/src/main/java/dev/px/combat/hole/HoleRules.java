@@ -1,7 +1,7 @@
 package dev.px.combat.hole;
 
-import dev.px.combat.world.CellTest;
 import dev.px.core.util.Validate;
+import dev.px.core.world.CellTest;
 
 import java.util.Arrays;
 import java.util.Collections;

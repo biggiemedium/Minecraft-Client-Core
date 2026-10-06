@@ -105,6 +105,8 @@ public final class MovementRig {
     public final List<Body> all = new ArrayList<>();
     public final List<Body> hidden = new ArrayList<>();
     private final Object me = new Object();
+    /** You, when given a body: otherwise you stand far off, out of everyone's way. */
+    private Body self;
 
     public MovementRig(CollisionSpace world) {
         this.world = world;
@@ -118,6 +120,12 @@ public final class MovementRig {
         prediction = new PredictionService(simulation);
     }
 
+    /** Gives you a body of your own, moving by {@code script} like anyone else's, eyes 1.62 up. */
+    public Body self(Vec3 at, Script script) {
+        self = new Body(at, script);
+        return self;
+    }
+
     public Body add(Vec3 at, Script script) {
         Body body = new Body(at, script);
         all.add(body);
@@ -126,7 +134,11 @@ public final class MovementRig {
 
     /** Every body takes a tick; the server sends whoever is due; then the client looks. */
     public void tick() {
-        for (Body body : all) {
+        List<Body> moving = new ArrayList<>(all);
+        if (self != null) {
+            moving.add(self);
+        }
+        for (Body body : moving) {
             MovementInput input = body.script.at(body.tick);
             body.yaw = input.getYaw();
             body.state = body.mover != null
@@ -155,7 +167,12 @@ public final class MovementRig {
 
         @Override
         public Object self() {
-            return me;
+            return self != null ? self : me;
+        }
+
+        @Override
+        public double eyeHeight(Object entity) {
+            return entity == me ? 0d : 1.62d;
         }
 
         @Override

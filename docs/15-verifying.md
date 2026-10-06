@@ -1,6 +1,6 @@
 ## 15. Verifying
 
-`dev.px.core.test.CoreSmokeTest` runs **1722 checks** in a plain JVM — no
+`dev.px.core.test.CoreSmokeTest` runs **1750 checks** in a plain JVM — no
 Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
@@ -23,6 +23,7 @@ core/src/testFixtures/java/dev/px/core/test/harness/
 | `MathTests` | grid positions and packing, directions, curves, statistics |
 | `UtilTests` | ring buffers and eviction, LRU and TTL caches, prefix completion, weighted draws, movement and rotation maths, tick timers, profiling, colour conversion, gradients, text and chat codes |
 | `SpatialTests` | range queries against a brute-force scan, voxel traversal order and faces, enclosure detection, A* through hand-drawn mazes |
+| `WorldTests` | block shapes stopping lines through them, beside them, over a slab, from inside, along a top face but not a bottom one, at an edge, relative to their cell, by value; rays through and over walls and slabs, both ways, from inside a block, through an empty world; a world without a cell, and a line getting out of it; entities in the way of a cell and not of the one beside or under them, you always, only you with no trackers, a region larger than a cell |
 | `ServiceTests` | dependency ordering, cycles, missing deps, failed startup |
 | `EventTests` | priority, stage, cancellation, supertype dispatch, listening gate |
 | `SettingTests` | every type: coercion, visibility, change events, JSON round-trip |

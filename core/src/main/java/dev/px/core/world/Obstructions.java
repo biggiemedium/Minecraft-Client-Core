@@ -1,4 +1,4 @@
-package dev.px.combat.world;
+package dev.px.core.world;
 
 import dev.px.core.entity.EntityService;
 import dev.px.core.entity.EntityTracker;
@@ -11,7 +11,8 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Whether any entity is in the way of something being placed.
+ * Whether any entity is in a region: in the way of a block being placed, of a
+ * step, of anything that needs the room empty.
  *
  * <pre>{@code
  * // everything you track, and the local player

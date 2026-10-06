@@ -1,10 +1,10 @@
 package dev.px.combat.search.rule;
 
-import dev.px.combat.world.BlockView;
-import dev.px.combat.world.Rays;
 import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.util.Validate;
+import dev.px.core.world.BlockView;
+import dev.px.core.world.Rays;
 
 import java.util.function.DoubleSupplier;
 

@@ -16,7 +16,6 @@ import dev.px.combat.search.rule.ReachPoint;
 import dev.px.combat.search.rule.Score;
 import dev.px.combat.search.rule.Thresholds;
 import dev.px.combat.search.timing.AttackLog;
-import dev.px.combat.world.BlockView;
 import dev.px.core.entity.EntityService;
 import dev.px.core.entity.Tracked;
 import dev.px.core.event.EventBus;
@@ -25,6 +24,7 @@ import dev.px.core.math.Vec3;
 import dev.px.core.target.TargetSelector;
 import dev.px.core.target.TargetService;
 import dev.px.core.util.Validate;
+import dev.px.core.world.BlockView;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -55,8 +55,8 @@ import java.util.function.Supplier;
  *         .log(sharedLog)                                  // shared with your other auras
  *         .build();
  *
- * Found<LivingEntity, AnchorSpot> spot = search.findPlace(myAnchorDevice);
- * List<Found<LivingEntity, AnchorSpot>> ranked = search.findPlaces(myAnchorDevice, 3);
+ * Found<LivingEntity, MySpot> spot = search.findPlace(myDevice);          // an explosive of your own
+ * List<Found<LivingEntity, MySpot>> ranked = search.findPlaces(myDevice, 3);
  * }</pre>
  *
  * <h2>Placing</h2>

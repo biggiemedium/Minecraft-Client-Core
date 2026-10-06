@@ -28,7 +28,10 @@ public final class Plan {
         /** No click your rules accept reaches it, not even with supports under it. */
         UNREACHABLE,
 
-        /** It would have been placed, but this tick's limit was reached first. */
+        /**
+         * It would have been placed, but this tick's limit was reached first. Any of
+         * its supports that fitted are in the plan, so it is nearer next tick.
+         */
         LIMIT
     }
 

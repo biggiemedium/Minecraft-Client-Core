@@ -1,9 +1,9 @@
 package dev.px.combat.vector;
 
-import dev.px.combat.world.BlockShape;
-import dev.px.combat.world.BlockView;
 import dev.px.core.math.Box;
 import dev.px.core.util.Validate;
+import dev.px.core.world.BlockShape;
+import dev.px.core.world.BlockView;
 
 import java.util.ArrayList;
 import java.util.Collections;

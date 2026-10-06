@@ -1,4 +1,4 @@
-package dev.px.combat.world;
+package dev.px.core.world;
 
 import dev.px.core.math.Box;
 import dev.px.core.util.Validate;
@@ -8,11 +8,11 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * What a block cell holds, as an explosion's rays see it: nothing, the whole
+ * What a block cell holds, as a line through it sees it: nothing, the whole
  * cell, or a few boxes inside it.
  *
  * <p>Boxes are relative to the cell, so {@code (0,0,0)-(1,0.5,1)} is a bottom
- * slab wherever it is. Give the shape your game's ray test actually uses; Core
+ * slab wherever it is. Give the shape your game's own line test uses; Core
  * attaches no meaning to any block. Build one per kind of block and reuse it:
  * a shape is immutable, and asking for it once a ray step must not allocate.
  *

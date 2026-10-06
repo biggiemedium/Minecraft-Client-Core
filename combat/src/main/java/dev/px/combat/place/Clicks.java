@@ -1,12 +1,12 @@
 package dev.px.combat.place;
 
-import dev.px.combat.world.CellTest;
 import dev.px.core.math.Direction;
 import dev.px.core.math.Vec2;
 import dev.px.core.math.Vec3;
 import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
 import dev.px.core.util.math.RotationMath;
+import dev.px.core.world.CellTest;
 
 import java.util.ArrayList;
 import java.util.Collections;

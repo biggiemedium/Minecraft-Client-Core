@@ -3,10 +3,10 @@ package dev.px.combat.explosion;
 import dev.px.combat.explosion.rule.Exposure;
 import dev.px.combat.explosion.rule.Falloff;
 import dev.px.combat.explosion.rule.Mitigation;
-import dev.px.combat.world.BlockView;
 import dev.px.core.entity.Tracked;
 import dev.px.core.math.Vec3;
 import dev.px.core.util.Validate;
+import dev.px.core.world.BlockView;
 
 /**
  * How much an explosion hurts a target, put together from four small rules

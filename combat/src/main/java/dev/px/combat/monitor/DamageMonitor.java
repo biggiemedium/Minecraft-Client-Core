@@ -3,7 +3,6 @@ package dev.px.combat.monitor;
 import dev.px.combat.explosion.DamageEstimate;
 import dev.px.combat.explosion.ExplosionModel;
 import dev.px.combat.explosion.Explosive;
-import dev.px.combat.world.BlockView;
 import dev.px.core.entity.EntityService;
 import dev.px.core.entity.EntityTracker;
 import dev.px.core.entity.Tracked;
@@ -16,6 +15,7 @@ import dev.px.core.math.Vec3;
 import dev.px.core.util.Validate;
 import dev.px.core.util.collect.CircularQueue;
 import dev.px.core.util.math.Statistics;
+import dev.px.core.world.BlockView;
 
 import java.util.ArrayList;
 import java.util.Arrays;

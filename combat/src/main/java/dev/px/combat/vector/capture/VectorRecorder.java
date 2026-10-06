@@ -8,12 +8,12 @@ import dev.px.combat.monitor.SampleRecorder;
 import dev.px.combat.vector.BlockSnapshot;
 import dev.px.combat.vector.TestVector;
 import dev.px.combat.vector.VectorSet;
-import dev.px.combat.world.BlockView;
 import dev.px.core.entity.Tracked;
 import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.util.Validate;
 import dev.px.core.util.collect.CircularQueue;
+import dev.px.core.world.BlockView;
 
 import java.util.List;
 import java.util.Map;

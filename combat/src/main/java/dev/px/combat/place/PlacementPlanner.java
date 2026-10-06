@@ -1,12 +1,12 @@
 package dev.px.combat.place;
 
-import dev.px.combat.world.Obstructions;
 import dev.px.core.math.Box;
 import dev.px.core.math.Direction;
 import dev.px.core.math.Vec2;
 import dev.px.core.math.Vec3;
 import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
+import dev.px.core.world.Obstructions;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -46,7 +46,8 @@ import java.util.function.IntSupplier;
  *       room to place into.
  *   <li><b>Supports.</b> A cell with nothing your rules let you click gets up to
  *       {@link Builder#supports} blocks beside it first, placed so that it then
- *       can be clicked; below it is tried first.
+ *       can be clicked; below it is tried first. When the tick's limit leaves no
+ *       room for the cell itself, its supports are started with what is left.
  *   <li><b>Nobody is built into.</b> A cell an entity stands in is left out: the
  *       server refuses it.
  * </ul>
@@ -114,6 +115,11 @@ public final class PlacementPlanner {
                 }
             }
             if (steps.size() + under.size() + 1 > limit) {
+                // Start its supports with what the tick has left: the most important cell still gets nearer.
+                for (int i = 0; i < under.size() && steps.size() < limit; i++) {
+                    steps.add(under.get(i));
+                    placed.add(under.get(i).getCell());
+                }
                 skipped.put(cell, Plan.Skip.LIMIT);
                 continue;
             }

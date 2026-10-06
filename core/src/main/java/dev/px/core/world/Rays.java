@@ -1,4 +1,4 @@
-package dev.px.combat.world;
+package dev.px.core.world;
 
 import dev.px.core.math.Vec3;
 import dev.px.core.util.spatial.VoxelRay;

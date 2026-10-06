@@ -3,13 +3,13 @@ package dev.px.combat.bed;
 import dev.px.combat.explosion.DamageEstimate;
 import dev.px.combat.explosion.ExplosionModel;
 import dev.px.combat.explosion.Explosive;
-import dev.px.combat.world.BlockView;
-import dev.px.combat.world.Obstructions;
 import dev.px.core.entity.Tracked;
 import dev.px.core.math.Direction;
 import dev.px.core.math.Vec3;
 import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
+import dev.px.core.world.BlockView;
+import dev.px.core.world.Obstructions;
 
 import java.util.Arrays;
 import java.util.Collections;

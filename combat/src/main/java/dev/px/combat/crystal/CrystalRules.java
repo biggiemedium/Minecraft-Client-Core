@@ -3,12 +3,12 @@ package dev.px.combat.crystal;
 import dev.px.combat.explosion.DamageEstimate;
 import dev.px.combat.explosion.ExplosionModel;
 import dev.px.combat.explosion.Explosive;
-import dev.px.combat.world.BlockView;
-import dev.px.combat.world.Obstructions;
 import dev.px.core.entity.Tracked;
 import dev.px.core.math.Box;
 import dev.px.core.math.Vec3;
 import dev.px.core.util.Validate;
+import dev.px.core.world.BlockView;
+import dev.px.core.world.Obstructions;
 
 /**
  * Everything about end crystals that depends on the game version, in one place,
