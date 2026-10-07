@@ -7,6 +7,7 @@ import dev.px.core.entity.Tracked;
 import dev.px.core.event.bus.CoreEventBus;
 import dev.px.core.math.Vec3;
 import dev.px.core.movement.prediction.Future;
+import dev.px.core.movement.prediction.Lookahead;
 import dev.px.core.movement.prediction.MotionEstimate;
 import dev.px.core.movement.prediction.Prediction;
 import dev.px.core.movement.prediction.PredictionService;
@@ -58,6 +59,7 @@ public final class PredictionTests {
         weighing();
         scenarios();
         precision();
+        lookahead();
         service(client);
     }
 
@@ -223,6 +225,41 @@ public final class PredictionTests {
                         + "(%.3f vs %.3f)", circling.predicted, circling.line),
                 circling.predicted < circling.line);
         Checks.check("and marked unreliable", !circling.reliable);
+    }
+
+    // --------------------------------------------------------------- lookahead
+
+    private static void lookahead() {
+        MovementRig rig = new MovementRig(new GridCollisionSpace().floor(0d, -300, 300));
+        Body runner = rig.add(Vec3.of(0.5, 0, 0.5), tick -> MovementInput.forward(-90f).withSprint(true));
+        for (int i = 0; i < 30; i++) {
+            rig.tick();
+        }
+        Tracked<Body> now = rig.tracked(runner);
+        Checks.check("Lookahead.none() is where they are now", Lookahead.<Body>none().at(now, 6) == now);
+        Tracked<? extends Body> line = Lookahead.<Body>extrapolated().at(now, 6);
+        Checks.check("extrapolated() is a straight line along their last move, on a stand-in",
+                line.getPosition().distanceTo(now.extrapolate(6)) < 1e-9 && !line.isTracked() && line.get() == runner);
+        Checks.check("and asked for now, it is them", Lookahead.<Body>extrapolated().at(now, 0) == now);
+
+        Tracked<? extends Body> soon = Lookahead.<Body>predicted(rig.prediction).at(now, 6);
+        for (int i = 0; i < 6; i++) {
+            rig.tick();
+        }
+        double off = soon.getPosition().distanceTo(runner.state.getPosition());
+        Checks.check(String.format(Locale.ROOT, "predicted() puts someone running where they are six ticks later "
+                + "(%.6f blocks off)", off), off < 1e-6 && soon != now);
+
+        Body lurcher = rig.add(Vec3.of(0.5, 0, 9.5), tick -> MovementInput.forward(tick * 40f).withSprint(true));
+        for (int i = 0; i < 12; i++) {
+            rig.tick();
+        }
+        Tracked<Body> unsure = rig.tracked(lurcher);
+        Checks.check("while the prediction is unreliable, predicted() keeps them where they are; "
+                        + "predicted(.., true) uses it anyway",
+                !rig.prediction.predict(unsure, 6).isReliable()
+                        && Lookahead.<Body>predicted(rig.prediction).at(unsure, 6) == unsure
+                        && Lookahead.<Body>predicted(rig.prediction, true).at(unsure, 6) != unsure);
     }
 
     // ---------------------------------------------------------------- weighing

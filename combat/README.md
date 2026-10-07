@@ -436,8 +436,9 @@ CrystalSearch.<LivingEntity>builder()
         .build();
 ```
 
-`Lookahead` is a one-method interface, and the search never knows how it is
-answered: `Lookahead.none()` (the default — where they are now),
+`Lookahead` is Core's ([§10](../docs/10-movement.md), `core.movement.prediction`),
+shared with the projectile aim solver: a one-method interface, and the search never
+knows how it is answered: `Lookahead.none()` (the default — where they are now),
 `Lookahead.extrapolated()` (a straight line), `Lookahead.predicted(...)` over
 Core's prediction (its likeliest future, and where they are now while it is not
 reliable), or your own. It is asked once per entity per search — targets, you, and
@@ -646,6 +647,7 @@ found.
 | crystals in break range without scanning every entity | `EntityTracker.forEachWithin`, over Core's `SpatialGrid` |
 | breaking a crystal before the world lists it | `EntityTracker.track` |
 | wall checks | `Rays`, over Core's `VoxelRay` |
+| where targets will be | `Lookahead`, over Core's `PredictionService` |
 | ticking | Core's event bus |
 
 Inhibit keeps its own small map of when each explosive is free again rather than

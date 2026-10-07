@@ -116,6 +116,42 @@ public final class Box {
                 && maxZ > other.minZ && minZ < other.maxZ;
     }
 
+    /**
+     * Where the segment from {@code from} to {@code to} first meets the box.
+     *
+     * <p>The box is closed: a segment grazing a face, an edge or a corner meets
+     * it. One that starts inside meets it at once, at 0.
+     *
+     * @return how far along the segment, from 0 at {@code from} to 1 at
+     *         {@code to}; NaN when it misses
+     */
+    public double clip(Vec3 from, Vec3 to) {
+        double enter = 0d;
+        double exit = 1d;
+        double[] starts = { from.getX(), from.getY(), from.getZ() };
+        double[] deltas = { to.getX() - from.getX(), to.getY() - from.getY(), to.getZ() - from.getZ() };
+        double[] mins = { minX, minY, minZ };
+        double[] maxs = { maxX, maxY, maxZ };
+        for (int axis = 0; axis < 3; axis++) {
+            double start = starts[axis];
+            double delta = deltas[axis];
+            if (Math.abs(delta) < 1e-12) {
+                if (start < mins[axis] || start > maxs[axis]) {
+                    return Double.NaN;
+                }
+                continue;
+            }
+            double t1 = (mins[axis] - start) / delta;
+            double t2 = (maxs[axis] - start) / delta;
+            enter = Math.max(enter, Math.min(t1, t2));
+            exit = Math.min(exit, Math.max(t1, t2));
+            if (enter > exit) {
+                return Double.NaN;
+            }
+        }
+        return enter;
+    }
+
     /** @return the point of the box nearest {@code point}; the point itself when it is inside */
     public Vec3 closestPoint(Vec3 point) {
         return Vec3.of(

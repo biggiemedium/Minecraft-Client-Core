@@ -18,6 +18,7 @@ Gradle module and its own jar:
 |---|---|
 | `core/` | everything in the contents below |
 | [`combat/`](combat/README.md) | PvP built on Core: crystal, bed and respawn anchor searches, explosion rules, holes, auto-fill, traps, block placement, a damage monitor, test vectors |
+| [`projectile/`](projectile/README.md) | Projectiles built on Core: where an arrow, pearl or potion goes and what it hits, following one already in the air, and aiming at a point or at someone moving — for Trajectories and BowAim modules |
 
 **Requires:** Java 8, Lombok (compile-time only), Gson (already ships with
 Minecraft). On ForgeGradle 2.x (1.8.9), which predates the `annotationProcessor`

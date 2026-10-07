@@ -4,3 +4,4 @@ rootProject.name = 'Core'
 // :core and never the other way round, so Core stays usable on its own.
 include 'core'
 include 'combat'
+include 'projectile'

@@ -1,34 +1,32 @@
-package dev.px.combat.search.rule;
+package dev.px.core.movement.prediction;
 
 import dev.px.core.entity.Tracked;
-import dev.px.core.movement.prediction.Prediction;
-import dev.px.core.movement.prediction.PredictionService;
 import dev.px.core.util.Validate;
 
 /**
- * Where an entity will be when an explosion lands: the search scores damage
- * there, not where the entity is now.
+ * Where an entity will be some ticks from now: when an explosion lands, when an
+ * arrow arrives, whenever something you start now reaches it.
  *
  * <pre>{@code
- * Lookahead.none()                                   // where it is now: the default
+ * Lookahead.none()                                   // where it is now
  * Lookahead.predicted(Core.prediction())            // where Core's prediction says it will be, when it is sure
  * Lookahead.extrapolated()                          // a straight line along its last move
  * (entity, ticks) -> myOwnGuess(entity, ticks)       // anything else
  * }</pre>
  *
- * <p>Optional, and the search never depends on how it is answered: give it
- * {@code Core.prediction()}, your own model, or nothing. It is asked once per
- * entity per search &mdash; targets, you, and anyone the search protects &mdash;
- * with the ticks your search says an explosion takes to land.
+ * <p>Whatever asks never depends on how it is answered: give it
+ * {@code Core.prediction()}, your own model, or nothing. The libraries on Core
+ * take one wherever timing matters &mdash; the combat searches for targets,
+ * you and anyone protected, the projectile aim solver for whoever it aims at.
  *
- * @param <E> the game's type for what can be hurt
+ * @param <E> the game's type for the entities it is asked about
  */
 @FunctionalInterface
 public interface Lookahead<E> {
 
     /**
      * @param entity the entity as it is now
-     * @param ticks  how many ticks from now the explosion lands; never negative
+     * @param ticks  how many ticks from now; never negative
      * @return the entity where it will be then: itself for now, or a
      *         {@link Tracked#projected} stand-in somewhere else
      */

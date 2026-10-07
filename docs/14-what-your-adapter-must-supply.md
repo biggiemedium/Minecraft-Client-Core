@@ -31,7 +31,8 @@ types if you want `Core.entities()` and targeting — see §12 — reporting the
 predict other players well — see §10 — and `MotionUpdateEvent` posts on top if you want
 timeline recordings — see §10, `PathSpace` if you use `util.spatial` — one lambda saying which cells your agent
 can occupy is enough to run `AStar` against your world — and a `BlockView` (one method: the shape in a cell) plus
-whatever `CellTest`s a library asks for if you use `world` or anything built on it, such as the combat library.
+whatever `CellTest`s a library asks for if you use `world` or anything built on it, such as the combat and projectile
+libraries.
 
 Core runs headless without any of these. The test suite boots it with none
 installed, which is how the seam stays honest.

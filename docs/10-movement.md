@@ -433,6 +433,24 @@ cost; it is not done.
 A prediction costs about 0.1–0.2 ms: one fetch from your `CollisionSpace`, then a
 few hundred simulated steps against the boxes it returned.
 
+#### Looking ahead
+
+Anything that lands some ticks after you start it — an explosion, an arrow —
+needs the target where it will be then, and `Lookahead` is the one-method answer
+the libraries on Core take for it:
+
+```java
+Lookahead.none()                                   // where they are now
+Lookahead.extrapolated()                          // a straight line along their last move
+Lookahead.predicted(Core.prediction())            // the likeliest future; where they are while it is unreliable
+(entity, ticks) -> myOwnGuess(entity, ticks)       // anything else
+
+Tracked<?> then = lookahead.at(target, 8);        // a Tracked.projected stand-in, or the entity itself
+```
+
+The combat searches and the projectile aim solver both take one, so a client
+decides once how it guesses where people will be.
+
 #### Recording real movement, and replaying it
 
 Every number above comes from movement the simulation produced itself. Real

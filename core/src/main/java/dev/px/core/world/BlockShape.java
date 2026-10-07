@@ -1,6 +1,9 @@
 package dev.px.core.world;
 
 import dev.px.core.math.Box;
+import dev.px.core.math.Direction;
+import dev.px.core.math.Vec3;
+import dev.px.core.math.Vec3i;
 import dev.px.core.util.Validate;
 
 import java.util.ArrayList;
@@ -87,6 +90,41 @@ public final class BlockShape {
     }
 
     /**
+     * The first point where the segment meets this shape in the cell at
+     * {@code (cellX,cellY,cellZ)}, by the same rules as {@link #intersects}.
+     *
+     * @return the hit, or {@code null} when the segment passes it by
+     */
+    RayHit hit(int cellX, int cellY, int cellZ,
+               double x1, double y1, double z1, double x2, double y2, double z2) {
+        double best = Double.NaN;
+        int bestAxis = -1;
+        int[] axis = new int[1];
+        for (int i = 0; i < boxes.length; i += 6) {
+            double enter = enter(x1, y1, z1, x2, y2, z2,
+                    cellX + boxes[i], cellY + boxes[i + 1], cellZ + boxes[i + 2],
+                    cellX + boxes[i + 3], cellY + boxes[i + 4], cellZ + boxes[i + 5], axis);
+            if (!Double.isNaN(enter) && (Double.isNaN(best) || enter < best)) {
+                best = enter;
+                bestAxis = axis[0];
+            }
+        }
+        if (Double.isNaN(best)) {
+            return null;
+        }
+        Direction face = null;
+        if (bestAxis == 0) {
+            face = x2 > x1 ? Direction.WEST : Direction.EAST;
+        } else if (bestAxis == 1) {
+            face = y2 > y1 ? Direction.DOWN : Direction.UP;
+        } else if (bestAxis == 2) {
+            face = z2 > z1 ? Direction.NORTH : Direction.SOUTH;
+        }
+        Vec3 point = Vec3.of(x1 + (x2 - x1) * best, y1 + (y2 - y1) * best, z1 + (z2 - z1) * best);
+        return new RayHit(point, Vec3i.of(cellX, cellY, cellZ), face, best);
+    }
+
+    /**
      * The slab test: clip the segment's parameter range against each axis in turn.
      *
      * <p>The segment must pass through the box for some length: one that only
@@ -99,8 +137,21 @@ public final class BlockShape {
      */
     static boolean segmentHitsBox(double x1, double y1, double z1, double x2, double y2, double z2,
                                   double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
+        return !Double.isNaN(enter(x1, y1, z1, x2, y2, z2, minX, minY, minZ, maxX, maxY, maxZ, null));
+    }
+
+    /**
+     * @param entered if given, receives the axis (0 x, 1 y, 2 z) whose face the
+     *                segment came in through, or -1 when it started inside
+     * @return how far along the segment it enters the box, from 0 to 1; NaN when
+     *         it does not pass through it, by the rules of {@link #segmentHitsBox}
+     */
+    private static double enter(double x1, double y1, double z1, double x2, double y2, double z2,
+                                double minX, double minY, double minZ, double maxX, double maxY, double maxZ,
+                                int[] entered) {
         double enter = 0d;
         double exit = 1d;
+        int axisIn = -1;
         double[] starts = { x1, y1, z1 };
         double[] deltas = { x2 - x1, y2 - y1, z2 - z1 };
         double[] mins = { minX, minY, minZ };
@@ -110,7 +161,7 @@ public final class BlockShape {
             double delta = deltas[axis];
             if (Math.abs(delta) < 1e-12) {
                 if (start < mins[axis] || start >= maxs[axis]) {
-                    return false;
+                    return Double.NaN;
                 }
                 continue;
             }
@@ -121,13 +172,19 @@ public final class BlockShape {
                 t1 = t2;
                 t2 = swap;
             }
-            enter = Math.max(enter, t1);
+            if (t1 >= enter) {
+                enter = t1;
+                axisIn = axis;
+            }
             exit = Math.min(exit, t2);
             if (enter >= exit) {
-                return false;
+                return Double.NaN;
             }
         }
-        return true;
+        if (entered != null) {
+            entered[0] = axisIn;
+        }
+        return enter;
     }
 
     @Override

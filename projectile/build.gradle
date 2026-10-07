@@ -1,0 +1,7 @@
+// Projectile: where thrown and shot things go, and how to aim them, built on
+// Core. Optional: a client that wants only Core never pulls this in.
+
+dependencies {
+    api project(':core')
+    testImplementation testFixtures(project(':core'))
+}
