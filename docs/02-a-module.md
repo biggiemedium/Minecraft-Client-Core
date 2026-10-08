@@ -13,6 +13,7 @@ public final class KillAura extends Module {
     private final MultiEnumSetting<Target> targets =
             multi("Targets", Target.class, Target.PLAYERS, Target.MOBS);        // checkbox list
     private final ColorSetting         hitbox = color("Hitbox", Color.RED);
+    private final BindSetting          key    = toggledBy(bind("Keybind", Key.R)); // opt-in, lists first
 
     // Who counts, in the game's own types. LivingTracker is yours: see §12.
     private final TargetSelector<EntityLivingBase> enemies = TargetSelector.from(LivingTracker.class)
@@ -47,7 +48,7 @@ public final class KillAura extends Module {
 
     @Override protected void onDisable() { lock.release(); }
 
-    /** Extra text shown after the name in the ArrayList. */
+    /** Extra text shown after the name, wherever your client lists modules. */
     @Override public String getDisplayInfo() { return mode.displayValue(); }
 
     public enum Mode { VANILLA, WATCHDOG, NCP }
@@ -85,6 +86,52 @@ Three things are automatic:
   `super` can no longer silently break event delivery.
 
 Leave `category` off `@ModuleInfo` and it is inferred from the package name.
+
+### Keybinds are opt-in
+
+A module has no settings it didn't declare. One that should switch on and off
+from a key hands a bind to `toggledBy`, which returns it for the field and lists
+it first; one without a bind is never toggled by a key, and has no key row in
+the GUI or entry in the config. A module has at most one toggle bind. If every
+module in your client should be bindable, say so once in your own base class:
+
+```java
+public abstract class ClientModule extends Module {
+    private final BindSetting keybind = toggledBy(bind("Keybind"));
+}
+```
+
+### Press or hold
+
+A bind either acts on the press or lasts while the key is down. `Bind.of(Key.R)`
+toggles the module each press; `Bind.hold(Key.R)` switches it on when the key
+goes down and off when it comes up, whatever modifiers are still held by then.
+
+```java
+private final BindSetting key = toggledBy(bind("Keybind", Bind.hold(Key.R)));
+```
+
+The mode is part of the bind's value, so it is saved and reset with it, and
+rebinding the key keeps it. Users switch it in the click GUI by middle-clicking
+the bind row, and code switches it with `setMode(BindMode.HOLD)`. Actions get
+the same choice: `Core.input().register(name, bind, onPress, onRelease)` runs
+`onRelease` when a hold bind comes up. Releases are heard even if a screen
+cancelled them, so a hold cannot stick; if your game can lose a release
+altogether (the window losing focus), call `Core.input().releaseAll()`.
+
+### When onEnable fails
+
+A module counts as on only once `onEnable` has returned. If it throws, the
+module is left off, nothing is told it switched on, and the exception reaches
+whoever enabled it; `onDisable` is not run, so release anything taken before the
+throw. `onEnable` can also refuse quietly by calling `disable()`. A disable
+always ends off and is always announced, even if `onDisable` throws.
+`ModuleToggleEvent` is therefore posted after the hook, never before it.
+
+Whether a module shows in an ArrayList, and in what order, is your HUD
+element's business: Core keeps no "visible" flag. Filter `Core.modules().enabled()`
+however your ArrayList wants, adding a `bool("Hidden", false)` to your base
+class if users should be able to hide one.
 
 > On Java 9+ (1.17 and newer), import `dev.px.core.module.Module` explicitly —
 > a wildcard import collides with `java.lang.Module`. Not an issue on Java 8.

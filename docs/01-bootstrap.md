@@ -30,7 +30,6 @@ Afterwards everything is reachable statically:
 Core.modules().get(KillAura.class);
 Core.notifications().success("Config", "Saved");
 Core.themes().getPrimary();
-Core.gui().toggleClickGui();
 Core.bus().post(new PlayerMoveEvent(x, y, z));
 ```
 
@@ -49,7 +48,7 @@ public enum Categories implements Category {
 ### Config: where everything is saved
 
 `start()` loads the saved config and `stop()` saves it. Each **section** —
-modules, HUD, GUI windows, theme, friends, accounts, and any of yours — is its
+modules, HUD, theme, friends, accounts, and any of yours — is its
 own JSON file, in every profile or shared by all of them:
 
 ```

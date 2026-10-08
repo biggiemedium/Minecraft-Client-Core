@@ -9,8 +9,7 @@ import dev.px.core.registry.Registry;
  * <p>A plain {@link Registry} keyed by name already gives duplicate detection,
  * ordering and iteration; the only thing it cannot do is find an entry by the
  * type it <em>handles</em> rather than the type it <em>is</em>. That is the one
- * method added here, exactly as
- * {@link dev.px.core.gui.SettingRendererRegistry} adds it for settings.
+ * method added here.
  */
 public final class HudRendererRegistry extends Registry<HudRenderer<?>> {
 

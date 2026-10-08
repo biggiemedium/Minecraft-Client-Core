@@ -1,10 +1,11 @@
 package dev.px.core.module;
 
 import dev.px.core.event.EventBus;
+import dev.px.core.module.category.Category;
+import dev.px.core.module.category.CategoryRegistry;
 import dev.px.core.registry.Registry;
 import lombok.RequiredArgsConstructor;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -76,14 +77,6 @@ public final class ModuleRegistry extends Registry<Module> {
 
     public List<Module> enabled() {
         return where(Module::isEnabled);
-    }
-
-    /** @return enabled modules that opted into the ArrayList, longest label first. */
-    public List<Module> arrayListEntries() {
-        return enabled().stream()
-                .filter(module -> module.getVisible().isOn())
-                .sorted(Comparator.comparingInt((Module module) -> module.getDisplayName().length()).reversed())
-                .collect(Collectors.toList());
     }
 
     public boolean isEnabled(Class<? extends Module> type) {

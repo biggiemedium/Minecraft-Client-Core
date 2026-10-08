@@ -5,7 +5,8 @@
 
 plugins {
     // Checks, FakePlatform and RecordingLogger, shared with every module's tests
-    // so they run headless the same way Core's do.
+    // so they run headless the same way Core's do, and the NanoVG window every
+    // module's visual harness opens.
     id 'java-test-fixtures'
 }
 
@@ -40,16 +41,22 @@ tasks.register('visual', JavaExec) {
 
 dependencies {
     // ---- visual harness only -------------------------------------------------
-    // LWJGL + NanoVG, so the HUD can be driven by a real renderer in a real
-    // window. Test scope on purpose: Core itself still has no dependencies, and
-    // `compileJava` still proves it.
-    testImplementation platform("org.lwjgl:lwjgl-bom:$lwjglVersion")
-    testImplementation 'org.lwjgl:lwjgl'
-    testImplementation 'org.lwjgl:lwjgl-glfw'
-    testImplementation 'org.lwjgl:lwjgl-opengl'
-    testImplementation 'org.lwjgl:lwjgl-nanovg'
-    testRuntimeOnly "org.lwjgl:lwjgl::$lwjglNatives"
-    testRuntimeOnly "org.lwjgl:lwjgl-glfw::$lwjglNatives"
-    testRuntimeOnly "org.lwjgl:lwjgl-opengl::$lwjglNatives"
-    testRuntimeOnly "org.lwjgl:lwjgl-nanovg::$lwjglNatives"
+    // LWJGL + NanoVG, so the HUD and the GUI can be driven by a real renderer in
+    // a real window. The backend lives in the test fixtures so every module's
+    // harness shares it, and `api` so their tests compile against it. Test scope
+    // on purpose: Core itself still has no dependencies, and `compileJava` still
+    // proves it.
+    testFixturesApi platform("org.lwjgl:lwjgl-bom:$lwjglVersion")
+    testFixturesApi 'org.lwjgl:lwjgl'
+    testFixturesApi 'org.lwjgl:lwjgl-glfw'
+    testFixturesApi 'org.lwjgl:lwjgl-opengl'
+    testFixturesApi 'org.lwjgl:lwjgl-nanovg'
+    testFixturesRuntimeOnly "org.lwjgl:lwjgl::$lwjglNatives"
+    testFixturesRuntimeOnly "org.lwjgl:lwjgl-glfw::$lwjglNatives"
+    testFixturesRuntimeOnly "org.lwjgl:lwjgl-opengl::$lwjglNatives"
+    testFixturesRuntimeOnly "org.lwjgl:lwjgl-nanovg::$lwjglNatives"
+
+    // The fixtures use Lombok like the rest of the tests.
+    testFixturesCompileOnly 'org.projectlombok:lombok:1.18.30'
+    testFixturesAnnotationProcessor 'org.projectlombok:lombok:1.18.30'
 }

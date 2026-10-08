@@ -4,11 +4,12 @@
 |---|---|
 | `event` / `event.bus` / `event.impl` | Bases, `@Subscribe`, the bus, built-in events |
 | `hook` | `GameHooks` (`Core.hooks()`) — every moment the adapter tells Core about, one method each; counts them, warns when one something needs never fires, and `verify()` for your development build. See §14 |
-| `module` | `Module`, `@ModuleInfo`, `Category`, `ModuleRegistry`, `ThreadedModule` (a module whose work runs off the game thread) |
+| `module` | `Module`, `@ModuleInfo`, `ModuleRegistry`, `ThreadedModule` (a module whose work runs off the game thread) |
+| `module.category` | `Category` (the interface your own enum implements) and `CategoryRegistry` |
+| `module.toggle` | `Toggleable` (a name, a description, an on/off state and settings; the base of `Module`, and what `ToggleableSection` saves) and `ModuleToggleEvent` |
 | `setting` / `setting.impl` | Settings, auto-discovery, the nine types |
-| `layout` | Geometry and the box model, shared by the HUD and the GUI and depending on neither: `Bounds`, `Size`, `Shape`, `Content`, `Align`, `Draw` |
+| `layout` | Geometry and the box model, shared by the HUD and the `gui` module and depending on neither: `Bounds`, `Size`, `Shape`, `Content`, `Align`, `Draw` |
 | `hud` | HUD placement and the edit-mode model: `HudElement`, `Anchor`, `HudLayout`, `Placement`, `HudService`, `HudRenderer`, `HudEditor`, `HudEditorView` |
-| `gui` / `gui.setting` / `gui.click` | The click GUI and the pieces it is built from: `Component`, `Panel`, `Screen`, `GuiService`, `GuiStyle`, the nine `SettingRenderer`s, and `ClickGuiScreen` |
 | `registry` | Generic `Registry<T>` — one class replacing four hand-written managers |
 | `service` | `Service` + `ServiceContainer`: subsystems declare `dependsOn()`, Core orders startup and shuts down in reverse |
 | `config` | `ConfigService`, `ConfigSection`, `ConfigLocation`, `ConfigLoadEvent` — JSON profiles, a folder each, one file per section, at the location you choose (per profile or shared, folders allowed). Atomic saves, unreadable files kept aside. See §1 |
@@ -16,7 +17,7 @@
 | `config.crypto` | Optional encryption: `ConfigCipher`, the interface you implement, and `AesGcmCipher`, AES-GCM from the JDK with passphrase key derivation |
 | `config.io` | `Json` — the shared Gson instance, atomic file writes, and `child(...)` for reading nested objects |
 | `command` | `Command`, `@CommandInfo`, typed `CommandContext`, chat dispatch |
-| `input` | `Key` / `MouseButton` / `Modifier` / `Bind` — Core's own enums, not LWJGL ints, so a bind saved on 1.8.9 loads on 1.21. `InputService` routes presses to module binds |
+| `input` | `Key` / `MouseButton` / `Modifier` / `Bind` — Core's own enums, not LWJGL ints, so a bind saved on 1.8.9 loads on 1.21. `BindMode` — whether a bind acts on the press or lasts while held. `InputService` routes presses and releases to module toggle binds and actions |
 | `render` | `Render` facade, `Render2D` / `Render3D` SPIs, `Color`, `Texture` |
 | `render.font` | `Font` measuring + `FontProvider` (your backend loads the TTF) |
 | `render.theme` | `Theme` = two accent colours plus derived roles; `ThemeService` holds radius / opacity / text colour |

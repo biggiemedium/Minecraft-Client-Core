@@ -15,11 +15,10 @@ import dev.px.core.event.Priority;
 import dev.px.core.event.Stage;
 import dev.px.core.event.impl.ClientLifecycleEvent;
 import dev.px.core.event.impl.TickEvent;
-import dev.px.core.gui.GuiService;
 import dev.px.core.hud.HudService;
 import dev.px.core.input.InputService;
 import dev.px.core.integration.IntegrationService;
-import dev.px.core.module.CategoryRegistry;
+import dev.px.core.module.category.CategoryRegistry;
 import dev.px.core.module.Module;
 import dev.px.core.module.ModuleRegistry;
 import dev.px.core.module.ThreadedModule;
@@ -103,7 +102,6 @@ public final class Core {
     private final AccountService accountService;
     private final IntegrationService integrationService;
     private final HudService hudService;
-    private final GuiService guiService;
     private final ShaderService shaderService;
     private final RotationService rotationService;
     private final SimulationService simulationService;
@@ -149,8 +147,6 @@ public final class Core {
         this.commandRegistry = services.register(new CommandRegistry(bus, platform, logger));
         this.inputService = services.register(new InputService(bus, moduleRegistry, platform));
         this.hudService = services.register(new HudService(logger, platform));
-        this.guiService = services.register(
-                new GuiService(logger, platform, moduleRegistry, categories, themeService));
         // Inert until the client installs a ShaderBackend, and says nothing when it
         // does not, so a client that ships no GLSL never learns this service exists.
         this.shaderService = services.register(new ShaderService(logger, platform));
@@ -258,7 +254,6 @@ public final class Core {
         configService.register(socialService, ConfigLocation.shared("friends"));
         configService.register(accountService, ConfigLocation.shared("accounts"));
         configService.register(hudService);
-        configService.register(guiService);
     }
 
     // ------------------------------------------------------- static access
@@ -333,9 +328,6 @@ public final class Core {
         return get().hudService;
     }
 
-    public static GuiService gui() {
-        return get().guiService;
-    }
 
     /**
      * Shader compilation, caching and uniform upload.

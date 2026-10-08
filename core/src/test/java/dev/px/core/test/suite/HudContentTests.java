@@ -7,6 +7,7 @@ import dev.px.core.hud.HudElement;
 import dev.px.core.hud.HudService;
 import dev.px.core.hud.Placement;
 import dev.px.core.layout.Shape;
+import dev.px.core.layout.Size;
 import dev.px.core.render.Color;
 import dev.px.core.render.Render;
 import dev.px.core.test.example.ExampleArrayList;
@@ -16,7 +17,9 @@ import dev.px.core.test.harness.RecordingRender2D;
 import dev.px.core.test.harness.TestClient;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The content system: describe an element once, and its size falls out.
@@ -177,6 +180,35 @@ public final class HudContentTests {
         Checks.check("and an unknown name reports nothing",
                 fillProbe.silhouetteOf("nothing-by-this-name") == null);
 
+        // Listing them, for a view that does not know the names in advance.
+        Content described = Content.column();
+        described.width(100f).align(Align.STRETCH).name("root");
+        described.row(r -> {
+            r.name("bar");
+            r.text("ab", ANY);
+            r.fill();
+            r.custom("knob", 10f, 4f, (x, y, w, h) -> { });
+        });
+        described.custom(20f, 5f, (x, y, w, h) -> { });
+        described.custom("knob", 30f, 6f, (x, y, w, h) -> { });
+        described.row(r -> r.name("bar").text("cd", ANY));
+        described.measure();
+        described.layout(5f, 7f, 100f, described.size().getHeight());
+        Map<String, Bounds> named = described.namedParts();
+        Checks.checkEquals("every named box and part is listed, in description order, unnamed ones left out",
+                Arrays.asList("root", "bar", "knob"), new ArrayList<>(named.keySet()));
+        Checks.check("each with the rectangle it was laid out in (bar " + named.get("bar") + ")",
+                named.get("bar") != null && Checks.eq(named.get("bar").getX(), 5f)
+                        && Checks.eq(named.get("bar").getY(), 7f) && Checks.eq(named.get("bar").getWidth(), 100f));
+        Checks.check("a repeated name, box or part, keeps the rectangle find() returns (knob " + named.get("knob") + ")",
+                named.get("knob") != null && named.get("knob") == described.find("knob")
+                        && Checks.eq(named.get("knob").getWidth(), 10f));
+        Checks.check("a box with nothing named lists nothing",
+                Content.column().text("x", ANY).namedParts().isEmpty());
+
+        slots();
+        paragraphs();
+
         // ---- measure once ----------------------------------------------------------------
         // The whole reason the content system exists: one description per frame,
         // used for both the size and the drawing.
@@ -325,6 +357,118 @@ public final class HudContentTests {
     }
 
     /** Registers a probe and returns the bounds it resolved to. */
+    /**
+     * Text wrapped to the width it is given. Six pixels a character, nine tall,
+     * eleven from one line to the next.
+     */
+    private static void paragraphs() {
+        Content narrow = Content.column();
+        narrow.width(40f).paragraph("aa bb cc dd", ANY);
+        Size wrapped = narrow.measure();
+        Checks.check("a paragraph wraps between words to the width it is given: two lines of 30 (" + wrapped + ")",
+                Checks.eq(wrapped.getHeight(), 20f));
+
+        Content padded = Content.column();
+        padded.width(40f).padding(6f).paragraph("aa bb cc dd", ANY);
+        Checks.checkEquals("inside the padding: 28 wide fits one word a line, four lines: 3 x 11 + 9 + 12",
+                54f, padded.measure().getHeight());
+
+        Content unbounded = Content.column().paragraph("aa bb cc dd", ANY);
+        Size whole = unbounded.measure();
+        Checks.check("with no width given it keeps the line whole (" + whole + ")",
+                Checks.eq(whole.getWidth(), 66f) && Checks.eq(whole.getHeight(), 9f));
+
+        Content lines = Content.column().paragraph("one\ntwo", ANY);
+        Size split = lines.measure();
+        Checks.check("and breaks at every newline (" + split + ")",
+                Checks.eq(split.getWidth(), 18f) && Checks.eq(split.getHeight(), 20f));
+
+        Content row = Content.row();
+        row.width(40f).paragraph("aa bb cc dd", ANY);
+        Checks.checkEquals("along a row it stays on one line", 9f, row.measure().getHeight());
+    }
+
+    /**
+     * Where a GUI container's children go. Every figure is worked out on paper
+     * from {@link FixedFont}: six pixels a character, nine tall.
+     */
+    private static void slots() {
+        Content plain = Content.column().text("ab", ANY);
+        Checks.check("a description without a slot has none to fill",
+                !plain.hasSlot() && !plain.fillSlot(10f, 10f));
+
+        Content unfilled = Content.column();
+        unfilled.text("ab", ANY);
+        unfilled.slot();
+        Size empty = unfilled.measure();
+        Checks.check("an unfilled slot takes no room, so a HUD element can ignore it (" + empty + ")",
+                unfilled.hasSlot() && Checks.eq(empty.getWidth(), 12f) && Checks.eq(empty.getHeight(), 9f));
+        unfilled.layout(0f, 0f, 12f, 9f);
+        Checks.check("and reports nowhere to put children", unfilled.slotBounds() == null);
+
+        // A window: a title, and a padded body the children go in. Nothing in it
+        // asks to stretch; the slot makes the body do so on its own.
+        Content window = Content.column();
+        window.width(100f).padding(2f);
+        window.text("Title", ANY);
+        window.column(body -> body.padding(4f).slot());
+        window.fillSlot(0f, 0f);
+        Checks.checkEquals("an empty slot leaves the chrome's height: 2 + 9 + 4 + 4 + 2",
+                21f, window.measure().getHeight());
+        window.layout(0f, 0f, 100f, 21f);
+        Bounds first = window.slotBounds();
+        Checks.check("the box around a slot spans its parent, so the slot gets the width inside both paddings ("
+                + first + ")", first != null && Checks.eq(first.getX(), 6f) && Checks.eq(first.getY(), 15f)
+                && Checks.eq(first.getWidth(), 88f));
+
+        window.fillSlot(88f, 40f);
+        Checks.checkEquals("a filled slot adds the children's height", 61f, window.measure().getHeight());
+        window.layout(0f, 0f, 100f, 61f);
+        Bounds filled = window.slotBounds();
+        Checks.check("and is laid out at that size (" + filled + ")", filled != null
+                && Checks.eq(filled.getY(), 15f) && Checks.eq(filled.getWidth(), 88f)
+                && Checks.eq(filled.getHeight(), 40f));
+
+        window.layout(0f, 0f, 100f, 100f);
+        Bounds taller = window.slotBounds();
+        Checks.check("given more height than it measured, the slot takes the extra (" + taller + ")",
+                taller != null && Checks.eq(taller.getHeight(), 79f));
+
+        Content centred = Content.column();
+        centred.width(100f).align(Align.CENTER);
+        centred.text("ab", ANY);
+        centred.slot();
+        centred.fillSlot(20f, 5f);
+        centred.measure();
+        centred.layout(0f, 0f, 100f, 14f);
+        Bounds spanning = centred.slotBounds();
+        Checks.check("a slot spans its box whatever the box's alignment (" + spanning + ")",
+                spanning != null && Checks.eq(spanning.getX(), 0f) && Checks.eq(spanning.getWidth(), 100f));
+
+        Content row = Content.row();
+        row.width(100f).gap(2f);
+        row.text("ab", ANY);
+        row.slot();
+        row.fillSlot(10f, 9f);
+        row.measure();
+        row.layout(0f, 0f, 100f, 9f);
+        Bounds side = row.slotBounds();
+        Checks.check("in a row, the slot takes the width left after the other parts (" + side + ")",
+                side != null && Checks.eq(side.getX(), 14f) && Checks.eq(side.getWidth(), 86f));
+
+        Content twice = Content.column();
+        twice.slot();
+        twice.custom("after", 5f, 5f, (x, y, w, h) -> { });
+        twice.slot();
+        twice.fillSlot(10f, 10f);
+        Checks.checkEquals("only the first slot is filled; a later one measures nothing",
+                15f, twice.measure().getHeight());
+        twice.layout(0f, 0f, 10f, 15f);
+        Bounds after = twice.find("after");
+        Checks.check("and the parts after the first slot sit below it (" + after + ")",
+                after != null && Checks.eq(after.getY(), 10f) && Checks.eq(twice.slotBounds().getY(), 0f));
+    }
+
     private static Bounds register(HudService hud, String id, Described described) {
         probes.add(hud.register(new Probe(id, described)));
         return HudLayoutTests.boundsOf(hud, id);

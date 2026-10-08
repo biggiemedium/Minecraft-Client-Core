@@ -12,8 +12,7 @@ import java.util.function.BiConsumer;
  * Core owns neither the colours nor the drawing calls &mdash; it resolves
  * geometry and then hands a placement to whichever renderer claims the element.
  *
- * <p>The arrangement is the one {@link dev.px.core.gui.SettingRenderer} already
- * uses for settings: a {@link dev.px.core.registry.Registry} of renderers keyed
+ * <p>The arrangement is a {@link dev.px.core.registry.Registry} of renderers keyed
  * by the type they handle, so a client that invents an element type registers a
  * renderer for it and nothing in this package changes.
  *
@@ -23,7 +22,7 @@ import java.util.function.BiConsumer;
  *             Bounds bounds = placement.getBounds();
  *             Size natural = placement.getNatural();
  *             Render.roundRect(bounds.getX(), bounds.getY(),
- *                     natural.getWidth(), natural.getHeight(), 3f, GuiStyle.surface());
+ *                     natural.getWidth(), natural.getHeight(), 3f, PANEL);
  *             Render.text(clock.text(), bounds.getX() + 4f, bounds.getY() + 3f, Color.WHITE);
  *         }));
  * }</pre>
@@ -40,8 +39,7 @@ public interface HudRenderer<E extends HudElement> extends Named {
     /**
      * The element class this renderer claims.
      *
-     * <p>A {@code Class<?>} rather than a {@code Class<E>} for the same reason
-     * {@link dev.px.core.gui.SettingRenderer} uses one: matching is by
+     * <p>A {@code Class<?>} rather than a {@code Class<E>} because matching is by
      * {@link Class#isInstance}, so the token only has to name the type and a
      * parameterised element needs no cast to register.
      */

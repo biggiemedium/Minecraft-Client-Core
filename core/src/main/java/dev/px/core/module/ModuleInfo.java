@@ -1,7 +1,6 @@
 package dev.px.core.module;
 
-import dev.px.core.input.Key;
-import dev.px.core.input.Modifier;
+import dev.px.core.module.category.CategoryRegistry;
 
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
@@ -36,14 +35,6 @@ public @interface ModuleInfo {
     /** Category name. Blank infers it from the last package segment. */
     String category() default "";
 
-    /** Default keybind. Users can rebind; this is only the starting value. */
-    Key bind() default Key.NONE;
-
-    Modifier[] modifiers() default {};
-
     /** Whether the module starts enabled on a fresh install. */
     boolean enabled() default false;
-
-    /** Whether the module appears in the ArrayList HUD element when enabled. */
-    boolean visible() default true;
 }

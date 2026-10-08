@@ -1,7 +1,6 @@
 package dev.px.core.test.visual;
 
 import dev.px.core.Core;
-import dev.px.core.gui.GuiStyle;
 import dev.px.core.layout.Bounds;
 import dev.px.core.hud.HudEditor;
 import dev.px.core.hud.HudEditorView;
@@ -9,28 +8,15 @@ import dev.px.core.hud.HudService;
 import dev.px.core.hud.Placement;
 import dev.px.core.layout.Shape;
 import dev.px.core.hud.SnapGuide;
-import dev.px.core.input.Key;
-import dev.px.core.input.MouseButton;
 import dev.px.core.render.Color;
 import dev.px.core.render.Render;
 import dev.px.core.test.example.ExampleCategories;
 import dev.px.core.test.example.ExampleKillAura;
 import dev.px.core.test.example.ExampleSprint;
 
-import java.util.EnumSet;
-import org.lwjgl.opengl.GL;
-import org.lwjgl.system.MemoryUtil;
 
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
-import java.io.File;
-import java.nio.ByteBuffer;
-import java.nio.file.Files;
 
 import static org.lwjgl.glfw.GLFW.*;
-import static org.lwjgl.nanovg.NanoVG.*;
-import static org.lwjgl.nanovg.NanoVGGL3.*;
-import static org.lwjgl.opengl.GL11.*;
 
 /**
  * The HUD in a real window, drawn by a real renderer.
@@ -59,73 +45,23 @@ public final class VisualTest {
     private static final Color LOCKED = Color.of(255, 150, 60, 210);
     private static final Color GUIDE = Color.of(120, 220, 255, 170);
 
-    private static final String[] FONT_CANDIDATES = {
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/Library/Fonts/Arial.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            "C:\\Windows\\Fonts\\arial.ttf",
-    };
-
     private VisualTest() {
     }
 
     public static void main(String[] args) throws Exception {
-        int frameLimit = frameLimit(args);
-        String screenshot = option(args, "--screenshot=");
-        String select = option(args, "--select=");
-        boolean showGui = has(args, "--gui");
-        boolean startEditing = has(args, "--edit") || select != null;
-
-        if (!glfwInit()) {
-            throw new IllegalStateException("GLFW would not start");
-        }
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-        glfwWindowHint(GLFW_VISIBLE, frameLimit > 0 ? GLFW_FALSE : GLFW_TRUE);
-
-        long window = glfwCreateWindow(1100, 680, "Core HUD - NanoVG harness", MemoryUtil.NULL, MemoryUtil.NULL);
-        if (window == MemoryUtil.NULL) {
-            throw new IllegalStateException("No window could be created");
-        }
-        glfwMakeContextCurrent(window);
-        glfwSwapInterval(1);
-        GL.createCapabilities();
-
-        long vg = nvgCreate(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
-        if (vg == MemoryUtil.NULL) {
-            throw new IllegalStateException("NanoVG would not start");
-        }
+        VisualWindow window = VisualWindow.open("Core HUD - NanoVG harness", args);
+        String select = window.option("--select=");
+        boolean startEditing = window.has("--edit") || select != null;
 
         // ---- boot Core, exactly as an adapter would -----------------------------
-        File dataDirectory = Files.createTempDirectory("core-visual").toFile();
-        dataDirectory.deleteOnExit();
-
-        WindowPlatform platform = new WindowPlatform(window, dataDirectory);
+        WindowPlatform platform = window.getPlatform();
         Core core = Core.builder("CoreVisual", "1.0").platform(platform).build();
 
-        // The GUI grid, resized for this harness's 15px font. Minecraft's own font
-        // is about 9px, which is what the defaults are shaped for. One call, and
-        // every row, window and indent Core ships follows it -- which is the whole
-        // point of the metrics being replaceable rather than constant.
-        GuiStyle.metrics(GuiStyle.Metrics.builder()
-                .rowHeight(20f)
-                .padding(6f)
-                .spacing(2f)
-                .windowWidth(190f)
-                .titleHeight(24f)
-                .indent(10f)
-                .build());
-
-        // Modules, so the click GUI has something to show.
+        // Modules, so the module list has something to show.
         core.getCategories().registerAll(ExampleCategories.class);
         core.getModuleRegistry().registerAll(new ExampleKillAura(), new ExampleSprint());
 
-        NanoVGRender2D backend = new NanoVGRender2D(vg);
-        Render.install(backend);
+        Render.install(window.getBackend());
 
         VisualElements.FpsCounter fps = new VisualElements.FpsCounter();
         VisualElements.Coordinates coords = new VisualElements.Coordinates();
@@ -137,20 +73,10 @@ public final class VisualTest {
 
         core.start();
 
-        Render.setDefaultFont(loadFont(vg));
+        Render.setDefaultFont(window.loadFont(15f));
 
         HudEditor editor = hud.getEditor();
-        installInput(window, hud, core, editor);
-
-        if (showGui) {
-            core.getGuiService().openClickGui();
-            core.getGuiService().getClickGui().getWindows()
-                    .forEach(w -> w.getChildren().forEach(child -> {
-                        if (child instanceof dev.px.core.gui.click.ModuleButton) {
-                            ((dev.px.core.gui.click.ModuleButton) child).setExpanded(true);
-                        }
-                    }));
-        }
+        installInput(window.getHandle(), hud, editor);
 
         if (startEditing) {
             hud.openEditor();
@@ -158,41 +84,24 @@ public final class VisualTest {
         }
 
         // ---- the frame ------------------------------------------------------------
-        long started = System.nanoTime();
-        int frames = 0;
-        int measuredFps = 0;
-        long lastSecond = started;
-        int sinceSecond = 0;
+        int[] measuredFps = new int[1];
+        int[] sinceSecond = new int[1];
+        float[] lastSecond = new float[1];
 
-        while (!glfwWindowShouldClose(window) && (frameLimit <= 0 || frames < frameLimit)) {
-            glfwPollEvents();
-
-            long now = System.nanoTime();
-            sinceSecond++;
-            if (now - lastSecond >= 1_000_000_000L) {
-                measuredFps = sinceSecond;
-                sinceSecond = 0;
-                lastSecond = now;
+        int frames = window.run((frame, seconds) -> {
+            sinceSecond[0]++;
+            if (seconds - lastSecond[0] >= 1f) {
+                measuredFps[0] = sinceSecond[0];
+                sinceSecond[0] = 0;
+                lastSecond[0] = seconds;
             }
-            float seconds = (now - started) / 1_000_000_000f;
 
             // Live data, so the elements genuinely resize as they update.
-            fps.setFps(measuredFps > 0 ? measuredFps
-                    : Math.round(frames / Math.max(0.001f, (now - started) / 1_000_000_000f)));
+            fps.setFps(measuredFps[0] > 0 ? measuredFps[0] : Math.round(frame / Math.max(0.001f, seconds)));
             coords.setX(Math.sin(seconds * 0.4) * 1200.0);
             coords.setY(64.0 + Math.sin(seconds) * 12.0);
             coords.setZ(Math.cos(seconds * 0.3) * 980.0);
             dial.setProgress((float) (0.5 + 0.5 * Math.sin(seconds * 0.8)));
-
-            int[] bufferWidth = new int[1];
-            int[] bufferHeight = new int[1];
-            glfwGetFramebufferSize(window, bufferWidth, bufferHeight);
-            glViewport(0, 0, bufferWidth[0], bufferHeight[0]);
-            glClearColor(0.10f, 0.11f, 0.13f, 1f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-            Render.begin2D(platform.getScreenWidth(), platform.getScreenHeight(),
-                    platform.getScreenScale());
 
             drawBackdropGrid(platform.getScreenWidth(), platform.getScreenHeight());
 
@@ -208,24 +117,11 @@ public final class VisualTest {
                 hud.drawAll(hud.resolve(false));
             }
 
-            // The GUI is drawn by the host, exactly as a Minecraft screen would.
-            core.getGuiService().renderFrame();
-
             drawHelp(platform.getScreenWidth(), platform.getScreenHeight(), editor.isActive());
-
-            Render.end2D();
-
-            if (screenshot != null && frames == frameLimit - 1) {
-                capture(screenshot, bufferWidth[0], bufferHeight[0]);
-            }
-            glfwSwapBuffers(window);
-            frames++;
-        }
+        });
 
         core.stop();
-        nvgDelete(vg);
-        glfwDestroyWindow(window);
-        glfwTerminate();
+        window.close();
 
         System.out.println("Rendered " + frames + " frames with a real NanoVG backend.");
     }
@@ -302,12 +198,12 @@ public final class VisualTest {
         }
     }
 
-    /** Centred along the bottom, clear of the windows the GUI opens at the top. */
+    /** Centred along the bottom. */
     private static void drawHelp(float width, float height, boolean editing) {
         String text = editing
                 ? "EDIT MODE    drag to move    corner to scale    scroll to scale    ALT no-snap    "
                         + "right-click hide    L lock    R reset    ESC exit"
-                : "E to edit the HUD    G for the click GUI";
+                : "E to edit the HUD";
         Render.text(text, (width - Render.textWidth(text)) / 2f, height - 22f,
                 Color.of(255, 255, 255, 105));
     }
@@ -320,22 +216,12 @@ public final class VisualTest {
      * <p>Core supplies {@code press}, {@code release}, {@code update} and the
      * action methods, and has no opinion about which key or button reaches them.
      */
-    private static void installInput(long window, HudService hud, Core core, HudEditor editor) {
+    private static void installInput(long window, HudService hud, HudEditor editor) {
         glfwSetMouseButtonCallback(window, (handle, button, action, mods) -> {
             double[] x = new double[1];
             double[] y = new double[1];
             glfwGetCursorPos(handle, x, y);
 
-            // The GUI gets first refusal, the way the game's own screen would.
-            if (core.getGuiService().isOpen()) {
-                if (action == GLFW_PRESS) {
-                    core.getGuiService().mousePressed((float) x[0], (float) y[0],
-                            button == GLFW_MOUSE_BUTTON_RIGHT ? MouseButton.RIGHT : MouseButton.LEFT);
-                } else {
-                    core.getGuiService().mouseReleased((float) x[0], (float) y[0]);
-                }
-                return;
-            }
             if (!editor.isActive()) {
                 return;
             }
@@ -361,17 +247,6 @@ public final class VisualTest {
         glfwSetKeyCallback(window, (handle, key, scancode, action, mods) -> {
             editor.setSnappingSuspended((mods & GLFW_MOD_ALT) != 0);
             if (action != GLFW_PRESS && action != GLFW_REPEAT) {
-                return;
-            }
-            if (core.getGuiService().isOpen()) {
-                if (key == GLFW_KEY_ESCAPE
-                        && !core.getGuiService().keyPressed(Key.ESCAPE, EnumSet.noneOf(dev.px.core.input.Modifier.class))) {
-                    core.getGuiService().close();
-                }
-                return;
-            }
-            if (key == GLFW_KEY_G) {
-                core.getGuiService().toggleClickGui();
                 return;
             }
             if (key == GLFW_KEY_E && !editor.isActive()) {
@@ -403,78 +278,5 @@ public final class VisualTest {
                 default: break;
             }
         });
-    }
-
-    // ----------------------------------------------------------------- internals
-
-    private static NanoVGFont loadFont(long vg) {
-        for (String candidate : FONT_CANDIDATES) {
-            if (!new File(candidate).isFile()) {
-                continue;
-            }
-            int handle = nvgCreateFont(vg, "ui", candidate);
-            if (handle != -1) {
-                System.out.println("Font: " + candidate);
-                return new NanoVGFont(vg, "ui", handle, 15f);
-            }
-        }
-        throw new IllegalStateException("No usable font found; add one to FONT_CANDIDATES");
-    }
-
-    /**
-     * Reads the framebuffer back and writes a PNG.
-     *
-     * <p>So that "it rendered without crashing" can be upgraded to "it rendered
-     * the right thing", which is not the same claim.
-     */
-    private static void capture(String path, int width, int height) throws Exception {
-        ByteBuffer pixels = MemoryUtil.memAlloc(width * height * 4);
-        try {
-            glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-
-            BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-            for (int y = 0; y < height; y++) {
-                for (int x = 0; x < width; x++) {
-                    int i = (x + width * y) * 4;
-                    int r = pixels.get(i) & 0xFF;
-                    int g = pixels.get(i + 1) & 0xFF;
-                    int b = pixels.get(i + 2) & 0xFF;
-                    // OpenGL's origin is bottom-left; an image's is top-left.
-                    image.setRGB(x, height - 1 - y, (r << 16) | (g << 8) | b);
-                }
-            }
-            ImageIO.write(image, "PNG", new File(path));
-            System.out.println("Screenshot: " + path);
-        } finally {
-            MemoryUtil.memFree(pixels);
-        }
-    }
-
-    private static String option(String[] args, String prefix) {
-        for (String arg : args) {
-            if (arg.startsWith(prefix)) {
-                return arg.substring(prefix.length());
-            }
-        }
-        return null;
-    }
-
-    private static boolean has(String[] args, String flag) {
-        for (String arg : args) {
-            if (arg.equals(flag)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** {@code --frames=N} renders offscreen and exits, so the harness can be checked in CI. */
-    private static int frameLimit(String[] args) {
-        for (String arg : args) {
-            if (arg.startsWith("--frames=")) {
-                return Integer.parseInt(arg.substring("--frames=".length()));
-            }
-        }
-        return 0;
     }
 }

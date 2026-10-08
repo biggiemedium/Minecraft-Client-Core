@@ -8,7 +8,6 @@ import dev.px.core.test.suite.ConcurrentTests;
 import dev.px.core.test.suite.ConfigStorageTests;
 import dev.px.core.test.suite.ConfigTests;
 import dev.px.core.test.suite.EventTests;
-import dev.px.core.test.suite.GuiTests;
 import dev.px.core.test.suite.HudContentTests;
 import dev.px.core.test.suite.HudEditorTests;
 import dev.px.core.test.suite.HudLayoutTests;
@@ -73,7 +72,6 @@ public final class CoreSmokeTest {
         EventTests.run(client);
         SettingTests.run(client);
         ModuleTests.run(client);
-        GuiTests.run(client);
         CommandTests.run(client);
         HudContentTests.run(client);
         HudLayoutTests.run(client);

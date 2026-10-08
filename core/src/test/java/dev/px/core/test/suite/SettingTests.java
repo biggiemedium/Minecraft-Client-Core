@@ -2,6 +2,7 @@ package dev.px.core.test.suite;
 
 import com.google.gson.JsonElement;
 import dev.px.core.input.Bind;
+import dev.px.core.input.BindMode;
 import dev.px.core.input.Key;
 import dev.px.core.input.Modifier;
 import dev.px.core.math.Range;
@@ -134,6 +135,28 @@ public final class SettingTests {
         Checks.check("an unknown key name degrades to unbound",
                 !Bind.deserialize("KEY:NOT_A_KEY").isBound());
 
+        Bind held = Bind.hold(Key.R, Modifier.CTRL);
+        Checks.checkEquals("a hold bind says so in its label", "Ctrl+R (Hold)", held.getDisplay());
+        Checks.checkEquals("a hold bind survives serialisation", held, Bind.deserialize(held.serialize()));
+        Checks.checkEquals("so does an unbound hold bind",
+                Bind.NONE.withMode(BindMode.HOLD), Bind.deserialize(Bind.NONE.withMode(BindMode.HOLD).serialize()));
+        Checks.checkEquals("a press bind writes no mode, so older configs read the same",
+                "CTRL+KEY:R", Bind.of(Key.R, Modifier.CTRL).serialize());
+        Checks.check("a bind written before modes existed reads as press",
+                !Bind.deserialize("CTRL+KEY:R").isHold());
+        Checks.check("a hold bind is not equal to the same keys on press",
+                !held.equals(Bind.of(Key.R, Modifier.CTRL)));
+
+        fixture.key.setMode(BindMode.HOLD);
+        Checks.checkEquals("setMode keeps the key", "Ctrl+R (Hold)", fixture.key.displayValue());
+        fixture.key.bindTo(Key.G);
+        Checks.check("rebinding keeps the mode", fixture.key.isHold());
+        fixture.key.clear();
+        Checks.check("so does clearing (" + fixture.key.get().serialize() + ")",
+                fixture.key.isHold() && !fixture.key.isBound());
+        fixture.key.reset();
+        Checks.check("reset restores the default mode with the default key", !fixture.key.isHold());
+
         // ---- visibility --------------------------------------------------------------------
         fixture.flag.set(true);
         Checks.check("a dependent setting is visible when its condition holds", fixture.dependent.isVisible());
@@ -179,8 +202,16 @@ public final class SettingTests {
 
         // ---- the real module ----------------------------------------------------------------------
         ExampleKillAura aura = client.getKillAura();
-        Checks.check("the inherited keybind sorts above a module's own settings",
+        Checks.check("a toggle bind lists first, though the module declares it last",
                 aura.getSettings().get(0) == aura.getKeybind());
+        int keybinds = 0;
+        for (Setting<?> setting : aura.getAllSettings()) {
+            if (setting == aura.getKeybind()) {
+                keybinds++;
+            }
+        }
+        Checks.checkEquals("a setting held by two fields is listed once (" + aura.getAllSettings() + ")",
+                1f, keybinds);
         Checks.check("a real module declares many settings with no registration calls",
                 aura.getSettings().size() >= 8);
         Checks.check("a module's group nests its children",

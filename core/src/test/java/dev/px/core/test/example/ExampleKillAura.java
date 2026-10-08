@@ -10,6 +10,7 @@ import dev.px.core.math.Vec3;
 import dev.px.core.module.Module;
 import dev.px.core.module.ModuleInfo;
 import dev.px.core.render.Color;
+import dev.px.core.setting.impl.BindSetting;
 import dev.px.core.setting.impl.BooleanSetting;
 import dev.px.core.setting.impl.ColorSetting;
 import dev.px.core.setting.impl.EnumSetting;
@@ -80,6 +81,9 @@ public final class ExampleKillAura extends Module {
     private final GroupSetting blocking = group("Blocking", false)
             .containing(autoBlock, blockDelay)
             .describe("Shield and sword blocking behaviour");
+
+    // ---- opted in, declared last, still listed first ----------------------
+    private final BindSetting keybind = toggledBy(bind("Keybind"));
 
     private final Stopwatch attackTimer = Stopwatch.expired();
 

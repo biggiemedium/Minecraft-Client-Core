@@ -4,9 +4,13 @@ import dev.px.core.render.Color;
 import dev.px.core.render.Render;
 import dev.px.core.render.Texture;
 import dev.px.core.render.font.Font;
+import dev.px.core.util.text.TextUtil;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -70,7 +74,11 @@ public final class Content {
     /** A leaf, or a nested box: something that measures itself and then draws. */
     private interface Part {
 
-        Size measure();
+        /**
+         * @param available the width this part may take, for text that wraps;
+         *                  NaN when nothing has said
+         */
+        Size measure(float available);
 
         void draw(Bounds at);
 
@@ -95,6 +103,23 @@ public final class Content {
 
         /** @return the laid-out rectangle of the named part within this one, or null. */
         default Bounds find(String name) {
+            return null;
+        }
+
+        /** Adds every named part within this one, keeping the first of a repeated name. */
+        default void named(Map<String, Bounds> out) {
+        }
+
+        /**
+         * @return whether this part takes its box's whole cross-axis size,
+         *         whatever the box's {@link Align}
+         */
+        default boolean stretches() {
+            return false;
+        }
+
+        /** @return the first slot within this part, filled or not, or null. */
+        default SlotPart slot() {
             return null;
         }
     }
@@ -229,7 +254,7 @@ public final class Content {
      *
      * <pre>{@code
      * c.height(h).backdrop((x, y, w, h) -> Render.roundGradient(x, y, w, h, r, a, b, b, a));
-     * c.row(row -> row.text(title, GuiStyle.text()));
+     * c.row(row -> row.text(title, Color.WHITE));
      * }</pre>
      */
     public Content backdrop(Draw draw) {
@@ -312,6 +337,33 @@ public final class Content {
         return add(new FlexPart());
     }
 
+    /**
+     * Where a GUI container's children go.
+     *
+     * <p>A container's renderer describes its look &mdash; a background, a title
+     * bar, a border &mdash; and says with this where the children sit. The GUI
+     * sizes the slot from the children's layout and places them in the rectangle
+     * it lands in, so the look and the children can never overlap by accident:
+     *
+     * <pre>{@code
+     * c.background(PANEL, 4f);
+     * c.row(title -> title.padding(4f).text(window.getTitle(), Color.WHITE));
+     * c.column(body -> body.padding(6f).slot());     // the children go here
+     * }</pre>
+     *
+     * <p>A filled slot takes all the room it can: it absorbs space left over on
+     * its box's main axis, as {@link #fill} does, and spans the box's cross axis
+     * whatever the box's {@link #align}. So does every box around it, which is
+     * why the nested {@code body} above needs no alignment of its own.
+     *
+     * <p>Only the first slot in a description is used; any later one measures
+     * nothing. Until the GUI fills it a slot is empty and takes no room, so in a
+     * HUD element, which has no children, it does nothing at all.
+     */
+    public Content slot() {
+        return add(new SlotPart());
+    }
+
     // --------------------------------------------------------- nested boxes
 
     /** A box whose children sit left to right. */
@@ -352,6 +404,29 @@ public final class Content {
 
     public Content textShadowed(Font font, String value, Color color, Color shadow) {
         return add(new TextPart(font, value, color, true, shadow));
+    }
+
+    /**
+     * Text that wraps onto as many lines as the width it is given needs, in the
+     * default font.
+     *
+     * <pre>{@code
+     * c.paragraph(module.getDescription(), MUTED);
+     * }</pre>
+     *
+     * <p>It breaks between words, and at every {@code \n}. The width is the one
+     * inside the column it sits in, when that column was given one &mdash; a GUI
+     * widget always is, through its container. With no width given, or along a
+     * row, it keeps each line whole. A word longer than the width is left whole
+     * on its own line.
+     */
+    public Content paragraph(String value, Color color) {
+        return add(new ParagraphPart(null, value, color));
+    }
+
+    /** As {@link #paragraph(String, Color)}, in a font of your choosing. */
+    public Content paragraph(Font font, String value, Color color) {
+        return add(new ParagraphPart(font, value, color));
     }
 
     public Content rect(float width, float height, Color color) {
@@ -444,14 +519,29 @@ public final class Content {
      * <p>Called once a frame by {@link HudService#resolve}, and never again
      * before that frame is drawn.
      */
-    /** Engine method: measures this box and remembers each part's size. */
+    /**
+     * Engine method: measures this box and remembers each part's size.
+     *
+     * <p>A box given a {@link #width} passes the width inside its padding down
+     * its column, so a {@link #paragraph} wraps to it. Without one, nothing
+     * wraps.
+     */
     public Size measure() {
+        return measure(Float.NaN);
+    }
+
+    private Size measure(float available) {
         sizes.clear();
+
+        float own = fixedWidth > 0f ? fixedWidth : available;
+        // Down a column, every part gets the width inside the padding. Along a
+        // row it depends on the other parts, so text in a row stays on one line.
+        float inner = horizontal || Float.isNaN(own) ? Float.NaN : Math.max(0f, own - padLeft - padRight);
 
         float main = 0f;
         float cross = 0f;
         for (Part part : parts) {
-            Size size = part.measure();
+            Size size = part.measure(inner);
             sizes.add(size);
             main += horizontal ? size.getWidth() : size.getHeight();
             cross = Math.max(cross, horizontal ? size.getHeight() : size.getWidth());
@@ -501,8 +591,12 @@ public final class Content {
             float mainSize = part.flexible()
                     ? slack
                     : (horizontal ? size.getWidth() : size.getHeight());
-            float crossSize = align.sizeIn(horizontal ? innerHeight : innerWidth,
-                    horizontal ? size.getHeight() : size.getWidth());
+            // A stretching part ignores the box's alignment and spans it, so its
+            // offset below comes out as zero whatever the alignment.
+            float crossSize = part.stretches()
+                    ? (horizontal ? innerHeight : innerWidth)
+                    : align.sizeIn(horizontal ? innerHeight : innerWidth,
+                            horizontal ? size.getHeight() : size.getWidth());
 
             float partX;
             float partY;
@@ -575,6 +669,88 @@ public final class Content {
             }
         }
         return null;
+    }
+
+    /**
+     * @return every named box and part with the rectangle it was laid out in, in
+     *         the order they were described
+     *
+     * <p>Valid after {@link #layout}. Where {@link #find} answers "where is the
+     * track?", this answers "what is named here?" &mdash; what a debug view or a
+     * test needs to show the parts a renderer described without knowing their
+     * names in advance. A name used twice keeps its first rectangle, the one
+     * {@link #find} returns, so the two never disagree.
+     *
+     * <p>Engine method, like {@link #find}: the author describing content never
+     * calls it.
+     */
+    public Map<String, Bounds> namedParts() {
+        Map<String, Bounds> out = new LinkedHashMap<>();
+        named(out);
+        return Collections.unmodifiableMap(out);
+    }
+
+    private void named(Map<String, Bounds> out) {
+        if (name != null) {
+            out.putIfAbsent(name, placed);
+        }
+        for (Part part : parts) {
+            part.named(out);
+        }
+    }
+
+    /** @return whether this description has a {@link #slot}. Engine method. */
+    public boolean hasSlot() {
+        return firstSlot() != null;
+    }
+
+    /**
+     * Gives the first {@link #slot} a size and makes it take part.
+     *
+     * <p>Engine method: the GUI calls it with the size of a container's children.
+     * Call {@link #measure} afterwards; the size counts from then on.
+     *
+     * @return whether there was a slot to fill
+     */
+    public boolean fillSlot(float width, float height) {
+        SlotPart slot = firstSlot();
+        if (slot == null) {
+            return false;
+        }
+        slot.fill(Size.of(width, height));
+        return true;
+    }
+
+    /**
+     * @return where the filled slot was laid out, or null when there is no slot
+     *         or it was never filled
+     *
+     * <p>Engine method, valid after {@link #layout}: the rectangle the GUI places
+     * a container's children in.
+     */
+    public Bounds slotBounds() {
+        SlotPart slot = firstSlot();
+        return slot == null || !slot.filled ? null : slot.placed;
+    }
+
+    /** The first slot in description order, which is the only one ever filled. */
+    private SlotPart firstSlot() {
+        for (Part part : parts) {
+            SlotPart slot = part.slot();
+            if (slot != null) {
+                return slot;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether the filled slot is somewhere in this box, which makes the box take
+     * all the room it can too.
+     */
+    private boolean holdsFilledSlot() {
+        SlotPart slot = firstSlot();
+        return slot != null && slot.filled;
     }
 
     /** Places this box and then draws it. */
@@ -650,8 +826,8 @@ public final class Content {
         }
 
         @Override
-        public Size measure() {
-            return box.measure();
+        public Size measure(float available) {
+            return box.measure(available);
         }
 
         @Override
@@ -671,12 +847,27 @@ public final class Content {
 
         @Override
         public boolean flexible() {
-            return box.grow;
+            return box.grow || box.holdsFilledSlot();
+        }
+
+        @Override
+        public boolean stretches() {
+            return box.holdsFilledSlot();
+        }
+
+        @Override
+        public SlotPart slot() {
+            return box.firstSlot();
         }
 
         @Override
         public Bounds find(String wanted) {
             return box.find(wanted);
+        }
+
+        @Override
+        public void named(Map<String, Bounds> out) {
+            box.named(out);
         }
     }
 
@@ -695,7 +886,7 @@ public final class Content {
         }
 
         @Override
-        public Size measure() {
+        public Size measure(float available) {
             return size;
         }
 
@@ -715,13 +906,20 @@ public final class Content {
         public Bounds find(String wanted) {
             return wanted.equals(name) ? placed : null;
         }
+
+        @Override
+        public void named(Map<String, Bounds> out) {
+            if (name != null) {
+                out.putIfAbsent(name, placed);
+            }
+        }
     }
 
     /** Empty, sizeless, and takes whatever the box has spare. */
     private static final class FlexPart implements Part {
 
         @Override
-        public Size measure() {
+        public Size measure(float available) {
             return Size.ZERO;
         }
 
@@ -732,6 +930,106 @@ public final class Content {
         @Override
         public boolean flexible() {
             return true;
+        }
+    }
+
+    /**
+     * Where a container's children go: nothing until filled, then the size the
+     * children need, and all the room the box has spare.
+     */
+    private static final class SlotPart implements Part {
+
+        private boolean filled;
+        private Size size = Size.ZERO;
+        private Bounds placed = Bounds.EMPTY;
+
+        void fill(Size children) {
+            this.filled = true;
+            this.size = children == null ? Size.ZERO : children;
+        }
+
+        @Override
+        public Size measure(float available) {
+            return filled ? size : Size.ZERO;
+        }
+
+        @Override
+        public void layout(Bounds at) {
+            this.placed = at;
+        }
+
+        @Override
+        public void draw(Bounds at) {
+        }
+
+        @Override
+        public boolean flexible() {
+            return filled;
+        }
+
+        @Override
+        public boolean stretches() {
+            return filled;
+        }
+
+        @Override
+        public SlotPart slot() {
+            return this;
+        }
+    }
+
+    /** Text wrapped to the width it is given, a line under the last. */
+    private static final class ParagraphPart implements Part {
+
+        private final Font font;
+        private final String value;
+        private final Color color;
+
+        /** The lines as last measured, drawn as they are. */
+        private List<String> lines = Collections.emptyList();
+
+        ParagraphPart(Font font, String value, Color color) {
+            this.font = font;
+            this.value = value == null ? "" : value;
+            this.color = color;
+        }
+
+        @Override
+        public Size measure(float available) {
+            Font measuring = font != null ? font : Render.getDefaultFont();
+            if (measuring == null) {
+                lines = Collections.emptyList();
+                return Size.ZERO;
+            }
+            List<String> wrapped = new ArrayList<>();
+            for (String line : value.split("\n", -1)) {
+                if (Float.isNaN(available) || line.isEmpty()) {
+                    wrapped.add(line);
+                } else {
+                    wrapped.addAll(TextUtil.wrap(line, available, measuring::widthOf));
+                }
+            }
+            lines = wrapped;
+            float width = 0f;
+            for (String line : wrapped) {
+                width = Math.max(width, measuring.widthOf(line));
+            }
+            float height = wrapped.isEmpty() ? 0f
+                    : measuring.getLineHeight() * (wrapped.size() - 1) + measuring.getHeight();
+            return Size.of(width, height);
+        }
+
+        @Override
+        public void draw(Bounds at) {
+            Font drawing = font != null ? font : Render.getDefaultFont();
+            if (drawing == null) {
+                return;
+            }
+            float y = at.getY();
+            for (String line : lines) {
+                Render.text(drawing, line, at.getX(), y, color);
+                y += drawing.getLineHeight();
+            }
         }
     }
 
@@ -760,7 +1058,7 @@ public final class Content {
         }
 
         @Override
-        public Size measure() {
+        public Size measure(float available) {
             if (font != null) {
                 return Size.of(font.widthOf(value), font.getHeight());
             }

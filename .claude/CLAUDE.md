@@ -1,7 +1,7 @@
 # Minecraft-Client-Core
 
 A version-independent library for Minecraft utility clients: `core/` plus optional
-add-on modules (`combat/`, `projectile/`, ...). It has no Minecraft on its classpath;
+add-on modules (`combat/`, `projectile/`, `gui/`, ...). It has no Minecraft on its classpath;
 client developers write the adapter that connects it to a game version.
 
 ## The rules that matter most
@@ -24,10 +24,14 @@ client developers write the adapter that connects it to a game version.
 4. **Nothing anticheat-specific.** No code written for one anticheat. Give
    developers presets they can use on strict servers (e.g. `PlacementStyle.strict`),
    built from general rules.
-5. **Core owns geometry, not pixels.** Core computes positions, layout, hit tests;
-   the client chooses the look. Headless models (e.g. `HudEditor`) never call
-   `Render` or pick colours. The `gui` package still draws itself; that is known —
-   don't "fix" it unasked.
+5. **The library owns geometry, not pixels.** It computes positions, layout, hit
+   tests and state; the client chooses the look. Headless models (e.g. `HudEditor`)
+   draw nothing and listen to nothing: they never call `Render`, pick colours or
+   subscribe to the bus, and the host routes input in through action methods. The
+   `gui` module follows the same rule — widgets are headless, the client draws
+   each widget type through a renderer it registers, and no default look ships.
+   The old click GUI in `gui`'s `legacy` package still draws itself; it is
+   temporary and is removed once clients no longer need it.
 6. **The adapter belongs to the client developer.** Core never throws on its own
    over a missing adapter piece; it warns, loses the feature, and offers
    `verify()` for a development build.
@@ -41,6 +45,11 @@ client developers write the adapter that connects it to a game version.
 - When two modules need the same abstraction, move it into core (as `core.world`
   was moved out of combat).
 - All modules release together at one version.
+- Core has no GUI. `gui/` is the only GUI system: read `gui/README.md` (and
+  `gui/EXAMPLE.md`, a click GUI built on it) before working on it.
+  New screens are plain objects (`new Screen(look, root)`, driven by the host);
+  the legacy click GUI is wired with `dev.px.gui.legacy.GuiService.install(core)`.
+  There is no `Core.gui()`.
 
 ## Where game facts come from
 
@@ -75,7 +84,7 @@ client developers write the adapter that connects it to a game version.
     -Dorg.gradle.java.home=/Users/jameskemp/Library/Java/JavaVirtualMachines/temurin-20.0.2/Contents/Home
   ```
 - Tests are a hand-rolled harness, not JUnit. Each module has a smoke test main
-  (`CoreSmokeTest`, `CombatSmokeTest`, `ProjectileSmokeTest`) that runs suites built
+  (`CoreSmokeTest`, `CombatSmokeTest`, `ProjectileSmokeTest`, `GuiSmokeTest`) that runs suites built
   from `Checks`. Run one with Gson on the classpath by hand (it is `compileOnly`):
   ```
   GSON=$(find ~/.gradle -name 'gson-2.8.9.jar' | head -1)
@@ -86,8 +95,8 @@ client developers write the adapter that connects it to a game version.
 - Every feature gets a suite (or a section in one), registered in its module's
   smoke test. Check messages are sentences describing the behaviour, with the
   values or stats that explain a failure in parentheses.
-- Shared test fixtures (`Checks`, `MovementRig`, `GridCollisionSpace`, ...) live
-  in `core/src/testFixtures`.
+- Shared test fixtures (`Checks`, `MovementRig`, `GridCollisionSpace`, `FixedFont`,
+  `ExampleCategories`, ...) live in `core/src/testFixtures`.
 - Mutation-check new logic: break a line on purpose, run the suite, confirm a
   check fails, restore. A mutation nothing catches means a missing test (or an
   equivalent mutation — say which).
@@ -101,6 +110,7 @@ client developers write the adapter that connects it to a game version.
 - Each module's `README.md`: its section for the feature, the package map, the
   verifying table and check count, and "Not yet included".
 - The root `README.md` module table.
+- `gui/EXAMPLE.md` when an API it uses changes: its code must still compile.
 
 ## Working with James
 

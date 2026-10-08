@@ -1,9 +1,11 @@
 package dev.px.core.module;
 
 import dev.px.core.event.EventBus;
-import dev.px.core.input.Bind;
+import dev.px.core.module.category.Category;
+import dev.px.core.module.toggle.ModuleToggleEvent;
+import dev.px.core.module.toggle.Toggleable;
 import dev.px.core.setting.impl.BindSetting;
-import dev.px.core.setting.impl.BooleanSetting;
+import dev.px.core.util.Validate;
 import lombok.Getter;
 
 import java.util.Locale;
@@ -33,6 +35,16 @@ import java.util.Locale;
  * Because nothing here calls {@code subscribe} in {@code onEnable}, a module
  * that overrides {@code onEnable} without calling {@code super} can no longer
  * silently stop receiving events.
+ *
+ * <p>A module has no key and no settings of its own. One that should switch on
+ * and off from a key says so with {@link #toggledBy}; one that should not, such
+ * as a module only ever toggled from the GUI, simply leaves it out:
+ *
+ * <pre>{@code
+ * private final BindSetting key = toggledBy(bind("Keybind", Key.R));
+ * }</pre>
+ *
+ * <p>A client that wants every module bindable says it once, in its own base class.
  */
 @Getter
 public abstract class Module extends Toggleable {
@@ -46,11 +58,12 @@ public abstract class Module extends Toggleable {
     /** Resolved by {@link ModuleRegistry} at registration; null before that. */
     private Category category;
 
-    /** Every module gets a rebindable key. Declared here so it sorts to the top of the list. */
-    private final BindSetting keybind;
-
-    /** Whether the module shows in the ArrayList HUD while enabled. */
-    private final BooleanSetting visible;
+    /**
+     * The bind that switches this module on and off, or null when it declared none.
+     * Held here as well as wherever the subclass keeps it, so it lists first among
+     * the module's settings.
+     */
+    private BindSetting toggleBind;
 
     protected Module() {
         // getClass() is legal here: the implicit super() has already returned, and it
@@ -58,12 +71,27 @@ public abstract class Module extends Toggleable {
         this.info = requireInfo(getClass());
         this.categoryName = info.category().isEmpty() ? inferCategory(getClass()) : info.category();
         identify(info.name(), info.description());
-        this.keybind = bind("Keybind", Bind.of(info.bind(), info.modifiers()));
-        this.visible = bool("Visible", info.visible()).describe("Show this module in the ArrayList");
     }
 
     public static void bindBus(EventBus eventBus) {
         bus = eventBus;
+    }
+
+    /**
+     * Makes {@code bind} the key that toggles this module, and returns it so it can
+     * be kept in a field. At most one per module; it is saved and drawn like any
+     * other setting, and lists first.
+     *
+     * @throws IllegalStateException if this module already has a toggle bind
+     */
+    protected final BindSetting toggledBy(BindSetting bind) {
+        Validate.notNull(bind, "toggle bind of " + getClass().getName());
+        if (toggleBind != null) {
+            throw new IllegalStateException(getClass().getName() + " already has a toggle bind ("
+                    + toggleBind.getName() + "); a module has at most one");
+        }
+        this.toggleBind = bind;
+        return bind;
     }
 
     /** @return whether a fresh install starts with this module on. */
@@ -72,14 +100,14 @@ public abstract class Module extends Toggleable {
     }
 
     /**
-     * Extra text shown after the module name in the ArrayList, such as the
+     * Extra text shown after the module name wherever it is listed, such as the
      * current mode or target. Empty for none.
      */
     public String getDisplayInfo() {
         return "";
     }
 
-    /** @return the ArrayList label: the name plus {@link #getDisplayInfo()} when present. */
+    /** @return the listed label: the name plus {@link #getDisplayInfo()} when present. */
     public final String getDisplayName() {
         String extra = getDisplayInfo();
         return extra == null || extra.isEmpty() ? getName() : getName() + " " + extra;

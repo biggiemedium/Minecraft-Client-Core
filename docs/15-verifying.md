@@ -1,6 +1,6 @@
 ## 15. Verifying
 
-`dev.px.core.test.CoreSmokeTest` runs **1781 checks** in a plain JVM — no
+`dev.px.core.test.CoreSmokeTest` runs **1749 checks** in a plain JVM — no
 Minecraft, no window, no GL context, no render backend, no font. If a check ever
 needs a game to pass, the abstraction has leaked.
 
@@ -11,9 +11,14 @@ core/src/test/java/dev/px/core/test/
 ├── example/               reference modules, commands and HUD elements
 └── suite/                 one file per subsystem
 
-core/src/testFixtures/java/dev/px/core/test/harness/
-                           Checks, FakePlatform, RecordingLogger — shared with every
-                           module's tests through testFixtures(project(':core'))
+core/src/testFixtures/java/dev/px/core/test/
+├── harness/               Checks, FakePlatform, RecordingLogger, RecordingRender2D,
+│                          FixedFont — shared with every module's tests through
+│                          testFixtures(project(':core'))
+├── example/               ExampleCategories
+└── visual/                the NanoVG window every module's visual harness opens
+                           (VisualWindow, NanoVGRender2D, NanoVGFont, WindowPlatform,
+                           GlfwKeys). Test tooling only; see §6
 ```
 
 | Suite | Covers |
@@ -26,10 +31,11 @@ core/src/testFixtures/java/dev/px/core/test/harness/
 | `WorldTests` | block shapes stopping lines through them, beside them, over a slab, from inside, along a top face but not a bottom one, at an edge, relative to their cell, by value; rays through and over walls and slabs, both ways, from inside a block, through an empty world; first hits on the face a ray comes in through, from either side, from above, on a slab, from inside and from on a face, on the nearer of a stair's boxes, a fence met above its cell only by a line through its cell, the first cell crossed winning, a point, and first hits agreeing with `clear` over 2000 random rays with the way to each clear; segments clipped against a box where they come in, either way, missing over it and short of it, from inside, grazing a face, touching a corner, as a point; a world without a cell, and a line getting out of it; entities in the way of a cell and not of the one beside or under them, you always, only you with no trackers, a region larger than a cell |
 | `ServiceTests` | dependency ordering, cycles, missing deps, failed startup |
 | `EventTests` | priority, stage, cancellation, supertype dispatch, listening gate |
-| `SettingTests` | every type: coercion, visibility, change events, JSON round-trip |
-| `ModuleTests` | annotation identity, category resolution, toggle lifecycle, keybinds |
+| `SettingTests` | every type: coercion, visibility, change events, JSON round-trip; a setting held by two fields listed once; bind modes saved, read from older configs as press, and kept through rebinding, clearing and reset |
+| `ModuleTests` | annotation identity, category resolution, toggle lifecycle, opt-in toggle binds (at most one, none means no key row and no key toggling); an `onEnable` that throws leaves the module off and unannounced, a refusal announces nothing, a failing `onDisable` still ends off and announced; hold binds on keys and mouse buttons (repeats, modifiers let go first, cancelled presses and releases, releases in menus, `releaseAll`) and hold actions |
 | `CommandTests` | dispatch, aliases, typed args, error messages, completion, prefix |
 | `HudLayoutTests` | all nine anchors, four resolutions, growth, clamping, z-order |
+| `HudContentTests` | measuring described content through the font, alignment, fill, grow and stretch, named parts found and listed (in order, a repeated name keeping the rectangle `find` returns), the GUI's slot (empty until filled, the boxes around it stretching and growing, extra height, a row, only the first used), paragraphs wrapping to a width inside the padding, at newlines, whole with no width or along a row, measuring once a frame, silhouettes |
 | `HudEditorTests` | shape-aware selection, drag, snapping, lock, handles, input gate |
 | `ShaderTests` | include inlining and include-once, version hoisting, defines, uniform recording for every type, compile-on-first-use, bind/unbind pairing and nesting, a throwing draw, a broken shader contained and logged once, reload, a lost context |
 | `MovementTests` | that corrected input travels where the player asked, swept over every facing, key pair and applied rotation: strict rounding never off by more than half a key step and never emitting a value a keyboard could not, exact rounding not off at all |
@@ -42,7 +48,6 @@ core/src/testFixtures/java/dev/px/core/test/harness/
 | `TargetingTests` | trackers typed by the test's own entity classes: routing by class, interface and subclass, overlapping trackers reading each entity once and never reading one nobody wants, the local player in none; the game's object back with no cast, and zero rather than any game's numbers when the source leaves something out; one object per entity per tracker with velocity and ticks tracked, untracked on leaving or on no longer being accepted and never recycled, with hooks firing once each way; `track` and `forget` between ticks, including `track` from a hook in the middle of a refresh; throwing sources, `accepts` and hooks contained and logged once; range to the box not the position, and 450 random grid queries against a brute-force scan at two cell sizes; selectors by class built before their tracker exists, filters on the game's object and on measurements, range read live, field of view turning with the player, every sort with missing values last both ways, limits, origins, a query nested in a filter, sticky and greedy locks refusing another tracker's entity, box distance, inset and aim points |
 | `HookTests` | every hook posting its event in the right stage and reporting cancellation, chat handing back a rewritten message; counting however an event was posted, cancelled packets included, inbound and outbound apart; listeners named after the class that owns them or registered them, disabled modules and catch-all handlers left out; the self-check silent out of a world, within the grace period, for hooks that fire, hooks nothing needs and hooks that fire only on player input, then warning once with what is idle and the call to make, a late need getting its own grace period, a throwing platform contained; `verify()` listing needed hooks that never fired and `verify(hooks)` exactly the ones named; and the booted client naming Core's own services as what idles without ticks, keys, chat and packets |
 | `RotationTests` | priority arbitration, stable tie-breaking across renewals, claims expiring without release, stepped and snapped turns, the short way round 180, that reads and requests commute in any order, easing back on release, both modes, the inert no-sink path |
-| `GuiTests` | renderer lookup and replacement, tree structure, visibility gating, hit routing, every setting type edited through the GUI, the input gate, window persistence |
 | `ConfigStorageTests` | default and renamed layouts, sections in folders of their own, invalid paths and nested folders refused; `place` winning over registration and moving Core's sections, no two sections sharing a file even by case; profiles switching only their own sections, the last active one remembered across a restart and a deleted one falling back, profile names never leaving the folder; late registration loaded at once; no temporary files left, an unreadable file costing only its own section and copied aside before the save on exit, a never-loaded config never saved over; encryption off unless asked, plaintext gone once encrypted, the right key loading, a wrong one or none leaving the file safe, a file moved to another section's place refused; key derivation, fresh nonces, tamper detection; and the old single-file profiles converted once, shared sections from the active one, encrypted where asked, never overwriting converted files |
 | `ConfigTests` | every built-in section round-tripping through a profile folder, friends and accounts shared, a full load restoring shared sections, second-load regression, path sanitising |
 

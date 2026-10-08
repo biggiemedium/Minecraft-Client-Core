@@ -93,13 +93,16 @@ public abstract class SettingHolder implements Named {
     // ------------------------------------------------------------ discovery
 
     private void discover() {
+        // A setting held by two fields (a base class keeping a reference to one its
+        // subclass declares) is listed once, at the first field that holds it.
         List<Setting<?>> found = new ArrayList<>();
+        Set<Setting<?>> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Field field : Reflect.fieldsOf(getClass())) {
             if (!Setting.class.isAssignableFrom(field.getType())) {
                 continue;
             }
             Object value = Reflect.read(field, this);
-            if (value != null) {
+            if (value != null && seen.add((Setting<?>) value)) {
                 found.add((Setting<?>) value);
             }
         }

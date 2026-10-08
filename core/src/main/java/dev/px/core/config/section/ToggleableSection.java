@@ -3,7 +3,7 @@ package dev.px.core.config.section;
 import dev.px.core.config.ConfigSection;
 import dev.px.core.config.io.Json;
 import com.google.gson.JsonObject;
-import dev.px.core.module.Toggleable;
+import dev.px.core.module.toggle.Toggleable;
 import dev.px.core.registry.Registry;
 import dev.px.core.setting.Setting;
 import lombok.Getter;

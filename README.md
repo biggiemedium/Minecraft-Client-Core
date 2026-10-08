@@ -2,7 +2,7 @@
 
 The version-independent half of a Minecraft utility client: event bus, modules,
 settings, config, commands, input, services, a pluggable render facade, a HUD
-layout engine with an edit-mode model, a click GUI, a shader pipeline that
+layout engine with an edit-mode model, a shader pipeline that
 leaves OpenGL to you, and rotation arbitration so two modules cannot silently
 fight over the player's head.
 
@@ -19,6 +19,7 @@ Gradle module and its own jar:
 | `core/` | everything in the contents below |
 | [`combat/`](combat/README.md) | PvP built on Core: crystal, bed and respawn anchor searches, explosion rules, holes, auto-fill, traps, block placement, a damage monitor, test vectors |
 | [`projectile/`](projectile/README.md) | Projectiles built on Core: where an arrow, pearl or potion goes and what it hits, following one already in the air, and aiming at a point or at someone moving — for Trajectories and BowAim modules |
+| [`gui/`](gui/README.md) | Screens built on Core's layout and render facade, being designed as headless building blocks for any screen — module GUIs, the HUD editor, title and in-game screens. So far: screens with input, focus, dragging and drag and drop; rows, grids, stacks, scrolling lists, popups, tooltips and wrapped text; buttons, checkboxes, sliders, text fields, dropdowns and windows — all drawn by renderers the client registers, plus the legacy click GUI moved out of Core. See [the example](gui/EXAMPLE.md) |
 
 **Requires:** Java 8, Lombok (compile-time only), Gson (already ships with
 Minecraft). On ForgeGradle 2.x (1.8.9), which predates the `annotationProcessor`
@@ -34,7 +35,7 @@ configuration, put Lombok on `compile` — the processor is found on the classpa
 4. [A command](docs/04-a-command.md)
 5. [Rendering](docs/05-rendering.md)
 6. [HUD elements](docs/06-hud-elements.md)
-7. [The GUI](docs/07-the-gui.md)
+7. [The GUI](docs/07-the-gui.md) (moved to the `gui` module)
 8. [Threading](docs/08-threading.md)
 9. [Shaders](docs/09-shaders.md)
 10. [Movement](docs/10-movement.md)

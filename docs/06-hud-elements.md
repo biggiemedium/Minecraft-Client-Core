@@ -71,6 +71,14 @@ them on**. Everything returns `this`, so both chain.
 | `custom` | `min(w, h)` — a floor on the total size |
 | `row` `column` | |
 
+`slot()` is for the `gui` module: it marks where a container's children go. In
+a HUD element, which has no children, it takes no room and does nothing.
+
+`paragraph(text, colour)` wraps between words to the width its column was given,
+and at every `\n`. A HUD element sizes to its content, so give it a width
+(`c.width(120f)`) for its paragraphs to wrap to; without one, each line stays
+whole.
+
 `min()` is what stops an element collapsing to nothing when its content happens
 to be empty — a module list with nothing enabled, a text element before a font
 has loaded — which would otherwise leave it unclickable in the editor.
@@ -188,9 +196,10 @@ Bounds are clamped so at least 8px stays on screen; an element smaller than that
 stays fully visible. Clamping never writes back to the layout, so briefly
 shrinking the window does not permanently move someone's HUD.
 
-The box model lives in `dev.px.core.layout` and is shared with the GUI, which
-uses the same `Content`, `Bounds` and `Shape`. It depends on neither package, so
-the HUD and the GUI stay decoupled from each other.
+The box model lives in `dev.px.core.layout` and is shared with the
+[`gui`](../gui/README.md) module, which uses the same `Content`, `Bounds` and
+`Shape`. It depends on neither, so the HUD and the GUI stay decoupled from each
+other.
 
 Everything you describe is in **natural, unscaled** units. Scale is a transform
 applied around the whole element, so an element that never mentions scale is
@@ -296,14 +305,19 @@ NanoVG backend, five elements and an edit mode.
 | `NanoVGRender2D` | the `Render2D` backend — 28 methods of "draw this shape" |
 | `NanoVGFont` | measurement through the real font, which is what the layout is built on |
 | `WindowPlatform` | the `Platform` seam, on a GLFW window |
+| `VisualWindow` | the window, the frame loop, font loading, screenshots and the offscreen options |
+| `GlfwKeys` | GLFW's key codes turned into Core's `Key`, `Modifier` and `MouseButton` |
 | `VisualElements` | five elements, each one class, none mentioning a coordinate |
-| `VisualTest` | the window, the frame loop, and an edit mode written entirely by the "client" |
+| `VisualTest` | the HUD, and an edit mode written entirely by the "client" |
 
+The first five are in core's test fixtures (`dev.px.core.test.visual`), so the
+`gui` module's harness opens the same window; the last two are core's own tests.
 It is test scope only. Core itself still has no dependencies, and `compileJava`
 still proves it.
 
 `--frames=N --screenshot=out.png` renders offscreen and writes a PNG, so the
-harness can be checked without a display.
+harness can be checked without a display. `--mouse=x,y` reports that point as
+the cursor, since an offscreen window has none.
 
 ### Edit mode
 

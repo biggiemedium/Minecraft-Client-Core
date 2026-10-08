@@ -1,0 +1,23 @@
+// GUI: the building blocks for screens, built on Core's layout and render
+// facade. Optional: a client that draws its own screens never pulls this in.
+// See README.md for what it does and EXAMPLE.md for a click GUI built on it.
+
+dependencies {
+    api project(':core')
+    // Checks and FakePlatform for the suites, and the NanoVG window for `visual`.
+    testImplementation testFixtures(project(':core'))
+}
+
+// A runnable visual harness: a real window, a real renderer, the GUI with its
+// layout and hit areas drawn over it as a wireframe. Test tooling only; the
+// library itself draws through Render2D and never sees NanoVG.
+tasks.register('visual', JavaExec) {
+    group = 'verification'
+    description = 'Opens a window and draws the GUI, with a wireframe of its layout, using NanoVG.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.px.gui.test.visual.GuiVisualTest'
+    // GLFW must own the first thread on macOS, or creating a window aborts.
+    if (System.getProperty('os.name').toLowerCase().contains('mac')) {
+        jvmArgs '-XstartOnFirstThread'
+    }
+}
