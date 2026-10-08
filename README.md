@@ -20,6 +20,7 @@ Gradle module and its own jar:
 | [`combat/`](combat/README.md) | PvP built on Core: crystal, bed and respawn anchor searches, explosion rules, holes, auto-fill, traps, block placement, a damage monitor, test vectors |
 | [`projectile/`](projectile/README.md) | Projectiles built on Core: where an arrow, pearl or potion goes and what it hits, following one already in the air, and aiming at a point or at someone moving — for Trajectories and BowAim modules |
 | [`gui/`](gui/README.md) | Screens built on Core's layout and render facade, being designed as headless building blocks for any screen — module GUIs, the HUD editor, title and in-game screens. So far: screens with input, focus, dragging and drag and drop; rows, grids, stacks, scrolling lists, popups, tooltips and wrapped text; buttons, checkboxes, sliders, text fields, dropdowns and windows — all drawn by renderers the client registers, plus the legacy click GUI moved out of Core. See [the example](gui/EXAMPLE.md) |
+| [`navigation/`](navigation/PLAN.md) | In design, nothing built yet: getting the player somewhere through any pathfinder (Baritone included) or a precise local planner on Core's movement simulation, plus the flow engine Core will gain for writing automation. See [the plan](navigation/PLAN.md) |
 
 **Requires:** Java 8, Lombok (compile-time only), Gson (already ships with
 Minecraft). On ForgeGradle 2.x (1.8.9), which predates the `annotationProcessor`

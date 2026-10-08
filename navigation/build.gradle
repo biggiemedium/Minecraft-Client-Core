@@ -1,0 +1,7 @@
+// Navigation: following routes from any pathfinder, and a precise local planner
+// built on Core's movement simulation. Optional, and in design: see PLAN.md.
+
+dependencies {
+    api project(':core')
+    testImplementation testFixtures(project(':core'))
+}

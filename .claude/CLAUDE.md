@@ -50,6 +50,9 @@ client developers write the adapter that connects it to a game version.
   New screens are plain objects (`new Screen(look, root)`, driven by the host);
   the legacy click GUI is wired with `dev.px.gui.legacy.GuiService.install(core)`.
   There is no `Core.gui()`.
+- `navigation/` is in design, with no code yet: read `navigation/PLAN.md` before
+  working on it or on the flow engine, controls arbitration or shared memory it
+  plans for core, and keep it current as decisions are made.
 
 ## Where game facts come from
 
