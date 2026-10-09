@@ -444,6 +444,25 @@ public final class SimulationTests {
         Checks.checkEquals("step height zero turns the ledge into a wall", 0f,
                 (float) noStep.getPosition().getY());
 
+        // Pressed into a corner, the box touches two walls exactly; the next
+        // tick's box, rebuilt from its centre, can sit a rounding error inside
+        // one. That must still read as touching, or the jump below goes through.
+        GridCollisionSpace shaft = new GridCollisionSpace().solid(0, -1, 0);
+        for (int y = 0; y <= 3; y++) {
+            shaft.solid(1, y, 0).solid(-1, y, 0).solid(0, y, 1).solid(0, y, -1);
+        }
+        MotionState cornered = Simulation.simulate(MotionState.at(Vec3.of(0.5d, 0d, 0.5d)),
+                MovementInput.forward(45f), 6, shaft);
+        double furthest = 0d;
+        MotionState jumping = cornered;
+        for (int tick = 0; tick < 12; tick++) {
+            jumping = Simulation.step(jumping, MovementInput.forward(180f).withJump(true).withSprint(true), shaft);
+            furthest = Math.min(furthest, jumping.getPosition().getZ() - 0.3d);
+        }
+        Checks.check("a box pressed into a corner cannot jump out through the wall it touches"
+                        + String.format(" (got %.6f into it)", -furthest),
+                furthest > -1.0E-6d && jumping.getPosition().getY() < 1.3d);
+
         // Ice: the same acceleration, then the keys released. Slippery ground keeps
         // the momentum for longer.
         GridCollisionSpace ice = new GridCollisionSpace().floor(0d, -64, 64);

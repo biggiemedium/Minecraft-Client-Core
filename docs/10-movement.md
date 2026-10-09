@@ -1,16 +1,18 @@
 ## 10. Movement
 
-Three things that all come down to "where is the player going", in one package
-with the game-shaped parts behind two small interfaces.
+Everything that comes down to "where is the player going", with the game-shaped
+parts behind small interfaces.
 
-| `dev.px.core.movement` | | Needs |
+| Package | | Needs |
 |---|---|---|
-| `.rotation` | who gets the head, and how it turns | `RotationSink`, two methods |
-| `MovementCorrection` | keeping the keys honest once it has turned | nothing |
-| `.simulation` | where things have been and where they are going | `CollisionSpace`, one method |
+| `movement.rotation` | who gets the head, and how it turns | `RotationSink`, two methods |
+| `control` | who holds the movement keys and presses the buttons | `MovementSink`, one method; `ClickSink`, two |
+| `movement.MovementCorrection` | keeping the keys honest once it has turned | nothing |
+| `movement.simulation` | where things have been and where they are going | `CollisionSpace`, one method |
+| `navigation` | somewhere to get to, and anything that knows the way | nothing: a contract |
 
-Neither interface lives on `Platform`, which stays 13 methods with no player,
-world or packets in it.
+None of these interfaces lives on `Platform`, which stays 13 methods with no
+player, world or packets in it.
 
 ### Rotations
 
@@ -156,6 +158,54 @@ each −1, 0 or +1, which is eight directions and no more:
 
 No right answer, so it is an argument. `STRICT` is the default because a small
 drift is a better failure than a property that cannot be explained.
+
+### Controls
+
+The head is not the only thing two modules can fight over. A navigator walking
+the player somewhere and a module dodging an arrow both want the movement keys;
+an aura and an auto-eat both want the use button. `Core.controls()` arbitrates
+them the way `Core.rotations()` arbitrates the head:
+
+```java
+// in a module's tick handler -- claim every tick for as long as you want it
+Core.controls().move(this, MovementInput.forward(yaw).withSprint(true), RotationPriority.HIGH);
+Core.controls().press(this, Click.ATTACK, RotationPriority.HIGH);    // one click, this tick
+Core.controls().hold(this, Click.USE, RotationPriority.NORMAL);      // held while you keep asking
+
+// in the adapter, where the game reads its keys and handles its clicks
+Core.controls().applyMovement();
+Core.controls().applyClicks();
+```
+
+The same rules as rotations, for the same reasons:
+
+- **Highest priority wins**, on the same scale as `RotationPriority`; a tie goes
+  to whoever claimed first, and stays there while they keep asking.
+- **Claims expire.** One tick unless filed with a longer hold, so a module
+  switched off or throwing lets go on its own.
+- **Each control on its own**: the movement keys, the attack button and the use
+  button are three separate arbitrations.
+
+What is particular to each:
+
+- **A movement claim is every key at once**, with the yaw the keys are meant for
+  (a `MovementInput`). The winner's keys are the keys; nobody's are merged with
+  anybody else's, because half of one plan and half of another goes neither
+  place. If the yaw your game moves with is a different one, because another
+  module won the head, `MovementCorrection` turns the keys into the ones that go
+  the same way — the example on `MovementSink` does exactly that.
+- **A button is clicked or held.** A click is pressed once, and applying twice in
+  a tick still clicks once. A hold is pressed when it starts and **always let go
+  when it ends**, including when its claim simply lapsed, so the use button is
+  never left stuck down. Stopping the service lets go of anything held.
+- **While no claim wins, nothing is written** and the player's own keys stand.
+
+`MovementSink` is one method, `apply(MovementInput)`; `ClickSink` is two,
+`click(button)` and `setHeld(button, held)`. `Click` has two values, `ATTACK` and
+`USE` — the controls, not what they do; what a click does to whatever is under
+the crosshair is the game's. The service opens each tick on `TickEvent` like
+rotations do, and warns once if it is applied 600 times with no tick, since
+then claims would never lapse.
 
 ### Simulation
 
@@ -631,21 +681,51 @@ once.
 `setCapacity(n)` entries (262,144 by default), dropping the oldest and counting
 them; `setFilter` narrows which packets are kept.
 
+### The navigation contract
+
+Getting somewhere is the [`navigation`](../navigation/README.md) module's job,
+but asking to go somewhere is not: a flow step, a combat feature or a module
+should be able to without depending on that module, or on whether Baritone or
+the module's own planner does the walking. So the contract lives here, in
+`dev.px.core.navigation`, and it is plain geometry:
+
+```java
+Goal.block(x, y, z)                    // the feet in that block
+Goal.near(point, 2)                    // within two blocks of a point
+Goal.near(target, 4)                   // within four of someone, wherever they go
+Goal.column(x, z)                      // anywhere in that column
+Goal.level(y)                          // any block at that height
+Goal.avoid(region)                     // anywhere out of a region
+Goal.anyOf(home, Goal.near(bed, 1))    // whichever is nearer
+Goal.allOf(Goal.column(x, z), Goal.avoid(lava))
+```
+
+| Piece | What it is |
+|---|---|
+| `Goal` | `isMet(feet)`, and `gap(feet)`: how far at least, across and up or down. A goal that follows something reads it live and reports where it is through `anchor()` |
+| `Gap` | A lower bound, split by direction because each is covered at its own speed — walking across, jumping up, falling down. Never more than the truth: a planner's estimate built on a gap that overshoots misses the quickest route without any sign it did |
+| `PathProvider` | Anything that knows the way. One that **plans** returns a `Route` from `plan(goal, from)`; one that **drives** (`drives()`, as Baritone does) moves the player itself through `follow(goal)` each tick, and stops on `cancel()` |
+| `Route` | **Coarse** — positions to pass through, from a long-range pathfinder — or **precise**: every tick's keys and yaw, and the state expected after each. Named `Route` because `util.spatial` already has a `Path` |
+| `Progress` | Running (with blocks left, at least), arrived, failed or stuck, with a reason |
+
+Nothing here knows what a block is. A goal that depends on the world ("next to
+a chest") is yours, built from these shapes or written against `Goal`.
+
 ### Not using any of this
 
 Install no `RotationSink` and that service is inert: claims are still accepted
 and arbitrated, nothing is ever applied, `isActive()` stays false and `apply()`
 returns false. A client that keeps writing rotations itself loses nothing, and a
 module that files a claim into a client with no sink is harmless rather than
-broken.
+broken. Controls are the same without a `MovementSink` and a `ClickSink`.
 
 Install no `CollisionSpace` and the tracker still works in full — it needs no
 world at all — while simulation falls back to `CollisionSpace.empty()` and
 answers "where would this go if nothing were in the way". That is a useful
 question, so nothing warns about it.
 
-`MovementCorrection` is static and needs nothing installed, and nothing outside
-`dev.px.core.movement` references any of it.
+`MovementCorrection` is static and needs nothing installed. The navigation
+contract is interfaces and values, and does nothing until something plans.
 
 Never call `Core.timeline().begin(...)` and the recorder never subscribes to
 anything. Install no `PacketDescriber` and a recording still works, with

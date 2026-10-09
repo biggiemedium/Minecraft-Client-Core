@@ -50,9 +50,16 @@ client developers write the adapter that connects it to a game version.
   New screens are plain objects (`new Screen(look, root)`, driven by the host);
   the legacy click GUI is wired with `dev.px.gui.legacy.GuiService.install(core)`.
   There is no `Core.gui()`.
-- `navigation/` is in design, with no code yet: read `navigation/PLAN.md` before
-  working on it or on the flow engine, controls arbitration or shared memory it
-  plans for core, and keep it current as decisions are made.
+- `navigation/` has its navigator, local planner and danger built, on core's
+  controls (`core.control`) and navigation contract (`core.navigation`). Core's
+  flow engine (`core.flow`, `core.memory`; `docs/16-flows.md`) and `testkit/`
+  are built too. Read `navigation/README.md`, and `navigation/PLAN.md` before
+  working on what is still to come (the ready-made steps, `travel(...)` first).
+  Keep the plan current as decisions are made.
+- `testkit/` is for tests, never a client: a sandbox with its own Core services.
+  Core's *tests* use it (`testImplementation`); core's main code never imports it.
+  Steps reach services through `FlowContext`, never `Core`'s statics, so they run
+  in the sandbox unchanged.
 
 ## Where game facts come from
 
@@ -87,7 +94,7 @@ client developers write the adapter that connects it to a game version.
     -Dorg.gradle.java.home=/Users/jameskemp/Library/Java/JavaVirtualMachines/temurin-20.0.2/Contents/Home
   ```
 - Tests are a hand-rolled harness, not JUnit. Each module has a smoke test main
-  (`CoreSmokeTest`, `CombatSmokeTest`, `ProjectileSmokeTest`, `GuiSmokeTest`) that runs suites built
+  (`CoreSmokeTest`, `CombatSmokeTest`, `ProjectileSmokeTest`, `GuiSmokeTest`, `NavigationSmokeTest`, `TestkitSmokeTest`) that runs suites built
   from `Checks`. Run one with Gson on the classpath by hand (it is `compileOnly`):
   ```
   GSON=$(find ~/.gradle -name 'gson-2.8.9.jar' | head -1)
@@ -95,6 +102,7 @@ client developers write the adapter that connects it to a game version.
        dev.px.<module>.test.<Module>SmokeTest
   ```
   Core's own run uses `core/build/classes/java/test` in place of the module's.
+  Core's run also needs `testkit/build/classes/java/main`, since its flow tests run in the sandbox.
 - Every feature gets a suite (or a section in one), registered in its module's
   smoke test. Check messages are sentences describing the behaviour, with the
   values or stats that explain a failure in parentheses.

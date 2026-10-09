@@ -7,7 +7,10 @@ import dev.px.core.config.ConfigLocation;
 import dev.px.core.config.ConfigService;
 import dev.px.core.config.section.SettingsSection;
 import dev.px.core.config.section.ToggleableSection;
+import dev.px.core.control.ControlService;
 import dev.px.core.entity.EntityService;
+import dev.px.core.flow.FlowService;
+import dev.px.core.memory.Memory;
 import dev.px.core.event.EventBus;
 import dev.px.core.event.bus.CoreEventBus;
 import dev.px.core.hook.GameHooks;
@@ -104,6 +107,7 @@ public final class Core {
     private final HudService hudService;
     private final ShaderService shaderService;
     private final RotationService rotationService;
+    private final ControlService controlService;
     private final SimulationService simulationService;
     private final PredictionService predictionService;
     private final TimelineRecorder timelineRecorder;
@@ -115,6 +119,8 @@ public final class Core {
     private final GameHooks gameHooks;
     private final EntityService entityService;
     private final TargetService targetService;
+    private final Memory memory;
+    private final FlowService flowService;
 
     private boolean started;
 
@@ -153,6 +159,9 @@ public final class Core {
         // Also inert until the client installs a sink: claims are arbitrated, and
         // with nothing to write them to, nothing is written.
         this.rotationService = services.register(new RotationService(logger, bus));
+        // The movement keys and the buttons, arbitrated the same way, and just as
+        // inert until the client installs its sinks.
+        this.controlService = services.register(new ControlService(logger, bus));
         // Useful with nothing installed: a simulation with no collision space is
         // simply a ballistic one.
         this.simulationService = services.register(new SimulationService(logger, bus));
@@ -172,6 +181,16 @@ public final class Core {
         // no state of its own.
         this.entityService = services.register(new EntityService(logger, bus));
         this.targetService = services.register(new TargetService(entityService));
+        // Shared memory and the flow engine: idle until a flow is started, and
+        // handing steps Core's services through their context rather than statics.
+        this.memory = services.register(new Memory(bus));
+        this.flowService = services.register(new FlowService(logger, bus, controlService, rotationService, memory));
+        flowService.provide(SimulationService.class, simulationService);
+        flowService.provide(PredictionService.class, predictionService);
+        flowService.provide(EntityService.class, entityService);
+        flowService.provide(TargetService.class, targetService);
+        flowService.provide(ThreadService.class, threadService);
+        flowService.provide(Platform.class, platform);
         // Subscribes to nothing until a recording begins, so registering it
         // unconditionally costs a client that never records nothing at all.
         this.timelineRecorder = services.register(new TimelineRecorder(logger, bus));
@@ -351,6 +370,19 @@ public final class Core {
     }
 
     /**
+     * Arbitration for the movement keys and the attack and use buttons, the way
+     * {@link #rotations()} arbitrates the head.
+     *
+     * <p>Does nothing until the client installs a
+     * {@link dev.px.core.control.MovementSink} and a
+     * {@link dev.px.core.control.ClickSink}; claims are still accepted and
+     * resolved, just never applied.
+     */
+    public static ControlService controls() {
+        return get().controlService;
+    }
+
+    /**
      * The movement rules, run forward: where you will be, given your input, and
      * the self-check that says when to stop trusting them.
      *
@@ -430,6 +462,19 @@ public final class Core {
     /** Finding targets: selectors, sorts and locks over the trackers in {@link #entities()}. */
     public static TargetService targets() {
         return get().targetService;
+    }
+
+    /**
+     * Runs flows &mdash; automation written as steps, with fallbacks, interrupts
+     * and rewinding &mdash; and reflexes. Idle until something is started.
+     */
+    public static FlowService flows() {
+        return get().flowService;
+    }
+
+    /** Typed facts every flow shares, each with an age and an optional expiry. */
+    public static Memory memory() {
+        return get().memory;
     }
 
     /** Which anticheat the server probably runs, with the evidence for it. */

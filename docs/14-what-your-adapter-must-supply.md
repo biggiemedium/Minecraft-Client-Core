@@ -18,7 +18,9 @@ every tick, so calling the tick hooks (step 5) covers it. An adapter that does
 not calls `Core.threads().runPendingSync()` from its game loop instead; see §8.
 
 Optional: `RotationSink` if you want Core arbitrating rotations — two methods,
-and modules stop fighting over the head; `CollisionSpace` if you want movement
+and modules stop fighting over the head; `MovementSink` and `ClickSink` if you want it
+arbitrating the movement keys and the attack and use buttons too — one method and two,
+and the [navigation](../navigation/README.md) module drives through the first — see §10; `CollisionSpace` if you want movement
 simulation and prediction — one method; `ShaderBackend` if you use `shader` —
 one class of ordinary GL, and nothing else in Core notices whether it exists; `AuthProvider` (alt manager),
 `PresenceProvider` / `MediaProvider`, a `PacketDescriber` on `Core.network()` with your own packet kinds plus `PacketEvent`

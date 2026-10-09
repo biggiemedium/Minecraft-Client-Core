@@ -4,4 +4,5 @@
 dependencies {
     api project(':core')
     testImplementation testFixtures(project(':core'))
+    testImplementation project(':testkit')        // the sandbox, for the fight step's tests
 }

@@ -23,6 +23,7 @@ public final class CombatSmokeTest {
         PlaceTests.run();
         HoleFillTests.run();
         TrapTests.run();
+        FightTests.run();
         System.exit(Checks.summary());
     }
 }

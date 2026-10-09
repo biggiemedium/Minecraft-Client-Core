@@ -1,0 +1,7 @@
+// Test kit: a world with no game in it, for testing flows and anything else built
+// on Core. Clients add it as testImplementation; it depends only on :core.
+
+dependencies {
+    api project(':core')
+    testImplementation testFixtures(project(':core'))
+}

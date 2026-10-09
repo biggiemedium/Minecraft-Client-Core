@@ -84,6 +84,17 @@ public final class Simulation {
      */
     private static final double COLLECT_MARGIN = 1.0E-7d;
 
+    /**
+     * How far two boxes may overlap and still count as only touching.
+     *
+     * <p>A box stopped against a wall touches it exactly, but the next tick's box
+     * is rebuilt from the centre of this one, and the arithmetic can leave its face
+     * a rounding error inside the wall. Compared exactly, that reads as already
+     * overlapping, which is "not in the way", and the next sweep walks straight
+     * through. A numerical tolerance, not a game value.
+     */
+    private static final double TOUCHING = 1.0E-7d;
+
     private Simulation() {
     }
 
@@ -394,20 +405,19 @@ public final class Simulation {
      *
      * <p>The other two axes are tested for overlap first: a box beside this one is
      * not in the way however far down we go. Overlap is strict, so boxes that
-     * merely touch edge to edge do not block each other.
+     * merely touch edge to edge do not block each other, and boxes within
+     * {@link #TOUCHING} of each other count as touching.
      */
     private static double clampY(Box solid, Box moving, double dy) {
-        if (moving.getMaxX() <= solid.getMinX() || moving.getMinX() >= solid.getMaxX()) {
+        if (apart(moving.getMinX(), moving.getMaxX(), solid.getMinX(), solid.getMaxX())
+                || apart(moving.getMinZ(), moving.getMaxZ(), solid.getMinZ(), solid.getMaxZ())) {
             return dy;
         }
-        if (moving.getMaxZ() <= solid.getMinZ() || moving.getMinZ() >= solid.getMaxZ()) {
-            return dy;
-        }
-        if (dy > 0d && moving.getMaxY() <= solid.getMinY()) {
+        if (dy > 0d && moving.getMaxY() <= solid.getMinY() + TOUCHING) {
             double gap = solid.getMinY() - moving.getMaxY();
             return gap < dy ? gap : dy;
         }
-        if (dy < 0d && moving.getMinY() >= solid.getMaxY()) {
+        if (dy < 0d && moving.getMinY() >= solid.getMaxY() - TOUCHING) {
             double gap = solid.getMaxY() - moving.getMinY();
             return gap > dy ? gap : dy;
         }
@@ -415,17 +425,15 @@ public final class Simulation {
     }
 
     private static double clampX(Box solid, Box moving, double dx) {
-        if (moving.getMaxY() <= solid.getMinY() || moving.getMinY() >= solid.getMaxY()) {
+        if (apart(moving.getMinY(), moving.getMaxY(), solid.getMinY(), solid.getMaxY())
+                || apart(moving.getMinZ(), moving.getMaxZ(), solid.getMinZ(), solid.getMaxZ())) {
             return dx;
         }
-        if (moving.getMaxZ() <= solid.getMinZ() || moving.getMinZ() >= solid.getMaxZ()) {
-            return dx;
-        }
-        if (dx > 0d && moving.getMaxX() <= solid.getMinX()) {
+        if (dx > 0d && moving.getMaxX() <= solid.getMinX() + TOUCHING) {
             double gap = solid.getMinX() - moving.getMaxX();
             return gap < dx ? gap : dx;
         }
-        if (dx < 0d && moving.getMinX() >= solid.getMaxX()) {
+        if (dx < 0d && moving.getMinX() >= solid.getMaxX() - TOUCHING) {
             double gap = solid.getMaxX() - moving.getMinX();
             return gap > dx ? gap : dx;
         }
@@ -433,21 +441,24 @@ public final class Simulation {
     }
 
     private static double clampZ(Box solid, Box moving, double dz) {
-        if (moving.getMaxX() <= solid.getMinX() || moving.getMinX() >= solid.getMaxX()) {
+        if (apart(moving.getMinX(), moving.getMaxX(), solid.getMinX(), solid.getMaxX())
+                || apart(moving.getMinY(), moving.getMaxY(), solid.getMinY(), solid.getMaxY())) {
             return dz;
         }
-        if (moving.getMaxY() <= solid.getMinY() || moving.getMinY() >= solid.getMaxY()) {
-            return dz;
-        }
-        if (dz > 0d && moving.getMaxZ() <= solid.getMinZ()) {
+        if (dz > 0d && moving.getMaxZ() <= solid.getMinZ() + TOUCHING) {
             double gap = solid.getMinZ() - moving.getMaxZ();
             return gap < dz ? gap : dz;
         }
-        if (dz < 0d && moving.getMinZ() >= solid.getMaxZ()) {
+        if (dz < 0d && moving.getMinZ() >= solid.getMaxZ() - TOUCHING) {
             double gap = solid.getMaxZ() - moving.getMinZ();
             return gap > dz ? gap : dz;
         }
         return dz;
+    }
+
+    /** @return whether two spans along one axis overlap by no more than {@link #TOUCHING} */
+    private static boolean apart(double min, double max, double otherMin, double otherMax) {
+        return max <= otherMin + TOUCHING || min >= otherMax - TOUCHING;
     }
 
     /** The result of one move: where it ended up and what survived of the velocity. */

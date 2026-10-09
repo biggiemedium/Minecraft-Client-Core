@@ -59,4 +59,8 @@ dependencies {
     // The fixtures use Lombok like the rest of the tests.
     testFixturesCompileOnly 'org.projectlombok:lombok:1.18.30'
     testFixturesAnnotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+    // Core's own flow tests run in the test kit's sandbox. Test scope only: Core's
+    // main code never imports it, and the kit depends on Core, not the other way.
+    testImplementation project(':testkit')
 }

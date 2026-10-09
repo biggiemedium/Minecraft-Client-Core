@@ -17,7 +17,9 @@ tell you which rule it was.
 best few places, every threshold and timing rule, protecting friends, your own
 filters, ranking by what turning costs you, looking ahead, placing then breaking, and strict placement — for
 crystals, beds and respawn anchors, finding holes and predicting who gets into one, planning block placements, the damage
-monitor and test vectors are done. See
+monitor, test vectors, and [fight steps](#11-fighting) for Core's flows (your
+killaura, rotation logic and strafe plugged in, and a ready-made crystal attack)
+are done. See
 [Not yet included](#not-yet-included) for what comes next.
 
 **Requires:** Core, Java 8, Gson (ships with Minecraft). Inside this repository:
@@ -44,8 +46,9 @@ Without Gradle, copy `combat/src/main/java/dev/px/combat` alongside Core's sourc
 8. [The damage monitor](#8-the-damage-monitor)
 9. [Test vectors](#9-test-vectors)
 10. [When Mojang changes something](#10-when-mojang-changes-something)
-11. [Package map](#11-package-map)
-12. [Verifying](#12-verifying)
+11. [Fighting](#11-fighting)
+12. [Package map](#12-package-map)
+13. [Verifying](#13-verifying)
 
 ---
 
@@ -1392,7 +1395,124 @@ the profile matches the game.
 
 ---
 
-## 11. Package map
+## 11. Fighting
+
+A fight step for Core's [flows](../docs/16-flows.md): a bot fights its target
+with **your killaura**, turning the head with **your rotation logic** and
+moving with **your strafe**, each plugged in as a part.
+
+```java
+Fight<EntityPlayer> fight = Fight.<EntityPlayer>builder()
+        .attack(myAura)                 // required: your killaura's brain, or a CrystalAttack
+        .aim(mySmoothing)               // optional: how the head turns; snaps by default
+        .footwork(myStrafe)             // optional: the keys while fighting; none by default
+        .keep(enemies)                  // optional: lost once it no longer passes your selector
+        .vitals(myVitals)               // optional: its health is the step's progress
+        .build();
+
+Step bot = Flow.loop(Flow.sequence(
+        new FindEnemy(enemies, TARGET),
+        travel.to(c -> Goal.near(c.get(TARGET), 4)),
+        fight.against(TARGET).stuckAfter(Span.seconds(10), new Reposition())));
+```
+
+A `Fight` is built once and makes a new step, a `Fight.Round`, with every
+`against(...)`: from a flow key, read each tick, or a function of the flow.
+
+### The parts
+
+| Part | Answers each tick | It is yours because |
+|---|---|---|
+| `Attack<E>` | a `Strike`: where to look, and which button to click or hold, only once the head looks at a box if it names one | reach, the cooldown between swings and what blocks a hit are facts about the game |
+| `Aim` | a `RotationRequest` from where the head is towards the attack's point; `Aim.snap()` by default, `Aim.limited(template)` for a turn limit | smoothing, noise and how fast a head may turn are your client's |
+| `Footwork<E>` | a `MovementInput`, the keys and the yaw they are meant for, or null to leave the keys alone | strafing, keeping a distance and jump-resets are your client's |
+
+Each is told the fight as a `Bout`: the target, the eyes, where the head is,
+how long the fight has run, and the flow's context for its keys, memory and
+services. Your killaura's brain becomes a plain object that both your KillAura
+module and a bot's fight step call. A flow never switches a module on.
+
+```java
+public final class MyAura implements Attack<EntityPlayer> {
+    public Strike tick(Bout<? extends EntityPlayer> b) {
+        Tracked<? extends EntityPlayer> target = b.target();
+        Strike look = Strike.at(target.aimPoint(b.eyes(), 0.1));
+        if (target.distanceToBox(b.eyes()) > reach.get() || !cooldown.ready()) {
+            return look;                                            // keep the head on them, do not swing
+        }
+        return look.click(Click.ATTACK).whenFacing(target.getBox());
+    }
+
+    public void struck(Bout<? extends EntityPlayer> b, Strike strike) {
+        cooldown.reset();                                           // only when the click really went out
+    }
+}
+```
+
+**Answering or driving.** A part that answers says what it wants, and the step
+claims it through the flow at the flow's priority. A reflex, a pause or a
+higher claim then takes it away at once, and nothing is left held. An aura that
+cannot be split from your client's own rotations and packets **drives**
+instead: `drives()` returns true, it acts itself, and the step claims nothing
+for it. It is still asked each tick, and it must stop acting in `stop(...)`,
+which is how it hears the fight was paused or is over. Parts mix: your aura
+with a ready-made aim, the crystal attack with your strafe.
+
+**Your rotation manager.** A client-wide rotation manager does not need a part
+that drives: Core's `RotationSink` is where Core's chosen rotation reaches it.
+Strafing while the head is on the target is your `MovementSink` correcting the
+footwork's keys to the yaw the player faces ([Core §10](../docs/10-movement.md)).
+
+### How it ends
+
+| | The step |
+|---|---|
+| the target gone, no longer tracked, or no longer passing `keep(...)` | is done |
+| an `until(...)` on the step holding | is done |
+| no target as it starts, or eyes that are unknown | fails, saying which |
+| the attack returning `Strike.failed("why")` | fails with that reason |
+
+Given `vitals`, its progress is the target's health, so `stuckAfter` notices a
+fight that is not landing hits. The step declares `ROTATION`, `ATTACK` and `USE`,
+plus `MOVEMENT` when there is footwork, so eating in a reflex pauses it. Its parts
+are your objects and are shared by every step one `Fight` makes, so run one of
+those steps at a time. The eyes are those of the player the flow host's
+`EntityService` tracks, unless you give the `Fight` `eyes(...)`.
+
+**Chasing while fighting.** Race the fight with a travel step that leaves the
+head to it ([navigation §6](../navigation/README.md#6-travel-steps)):
+
+```java
+Travel chase = Travel.builder().provider(planner).player(state).turnHead(false).build();
+Step hunt = Flow.race(fight.against(TARGET), Flow.loop(chase.to(c -> Goal.near(c.get(TARGET), 3))));
+```
+
+### Crystals
+
+`CrystalAttack` is a ready-made attack on the `CrystalSearch` of §4, the same
+one your AutoCrystal uses:
+
+```java
+CrystalAttack<EntityPlayer> crystals = CrystalAttack.<EntityPlayer>builder()
+        .search(search)
+        .placing(() -> holding(Items.END_CRYSTAL))     // yours: whether a use places a crystal now
+        .breaking(breakSetting::get)                   // optional; on by default
+        .build();
+
+Fight<EntityPlayer> fight = Fight.<EntityPlayer>builder().attack(crystals).build();
+```
+
+One action a tick, breaking first. A break is an attack on the crystal, made
+once the head looks at its box. A place is a use on the block the search's
+option clicks, made once the head looks at that block. The search is told only
+what went out (`attacked`, `placed`), so a click a higher claim kept back never
+inhibits a crystal or reserves a base. It never holds an item: whether a use
+places a crystal is your `placing` rule. The search's targets are its own; the
+fight's target only says when the fight is over.
+
+---
+
+## 12. Package map
 
 | Package | Classes | What it is |
 |---|---|---|
@@ -1415,12 +1535,13 @@ the profile matches the game.
 | `combat.hole` | `HoleRules`, `HoleFinder`, `Hole`, `HoleShape`, `HoleWatch`, `HoleEntry`, `HoleFill`, `FillOption`, `FillFilter`, `FillStats` | what a hole is in your game, finding them, who might get into one, and the best ones to fill first |
 | `combat.place` | `Clicks`, `Click`, `FaceRule`, `HitPoint`, `PlacementStyle`, `PlacementPlanner`, `Plan`, `Shapes`, `Occupancy` | how your server takes a click, a preset per server, placing several blocks a tick, which cells to fill, and where a target is likely to be |
 | `combat.trap` | `TrapSearch`, `TrapPattern`, `TrapOrder`, `TrapOption`, `TrapFilter`, `TrapStats` | who to trap, which cells, the likeliest way out first, and this tick's placements |
+| `combat.fight` | `Fight`, `Attack`, `Aim`, `Footwork`, `Part`, `Bout`, `Strike`, `CrystalAttack` | fight steps for Core's flows: your killaura, rotation logic and strafe as parts, and a ready-made crystal attack |
 
 ---
 
-## 12. Verifying
+## 13. Verifying
 
-`dev.px.combat.test.CombatSmokeTest` runs **496 checks** in a plain JVM — no
+`dev.px.combat.test.CombatSmokeTest` runs **545 checks** in a plain JVM — no
 Minecraft, no window. The "game" is a few plain classes and a block grid written
 by the tests, with its own version profile written the way a client would, and
 the checks prove the library does what any profile says.
@@ -1428,13 +1549,14 @@ the checks prove the library does what any profile says.
 ```
 sh gradlew :combat:compileTestJava
 java -cp combat/build/classes/java/main:combat/build/classes/java/test:\
-core/build/classes/java/main:core/build/classes/java/testFixtures:<gson.jar> \
+core/build/classes/java/main:core/build/classes/java/testFixtures:testkit/build/classes/java/main:<gson.jar> \
      dev.px.combat.test.CombatSmokeTest
 ```
 
 Block shapes, rays and obstructions are Core's, and checked by Core's `WorldTests`. The suites share Core's test fixtures — `Checks`, `FakePlatform`, `RecordingLogger`,
 `GridCollisionSpace` and `MovementRig` —
-through `testFixtures(project(':core'))`.
+through `testFixtures(project(':core'))`. The fight steps run in the
+[test kit](../testkit/README.md)'s sandbox, at test scope only.
 
 | Suite | Covers |
 |---|---|
@@ -1447,6 +1569,7 @@ through `testFixtures(project(':core'))`.
 | `PlaceTests` | every way into a hole, each on the face turned toward it; strict direction from the side; the nearest click and the least turn; clicking a block itself from above and below; air places; faces behind walls, out of reach and covered; hit points at the centre and nearest, relative hits; a surround planned two a tick in order, filled and occupied cells skipped with reasons, a bridge built out against itself, out-of-order cells unreachable, supports one and two deep counted against the limit, started when the cell itself does not fit, before a later cell that would; shapes around a player in the middle of a block, on an edge and on a corner, a box filling one cell exactly, unions; webbing a player feet then head, refused for solid blocks, never into yourself, and ahead of a running target |
 | `HoleFillTests` | a hole an enemy heads for offered with its cells, chance and timing, safe with slack, holes nobody heads for and past your reach not; an enemy already in one too late; a double filled whole, nearest cell first; the best two ranked soonest first; escape holes kept only when set; your own hole kept only when protected; friends' holes kept, and friends never enemies even under an every-player selector; occupied holes; safe, race and late; pending fills and their wait; filters, your own ranking, clicks per cell and unclickable holes; a prior per enemy; missing parts |
 | `TrapTests` | full, top-only, anti-step and custom patterns, across two columns, never into the player; occupancy of someone still and someone walking, soonest first; vanilla and strict styles, fewer faces strictly, your own presets and their limit; a target in a hole roofed first, the roof stood on a head-ring block and the one above it, never on their head, then sealed and not offered; in the open the feet ring first, then the roof; bottom up and top only read live; strictly one a tick, roofed in three; moving and briefly-seen targets left alone, trapped where they will be when asked, the side they walk out of first, cells they stand in or likely will waiting, more with a warier avoid chance; pending traps and their wait; the trap nearest done first, friends never trapped, filters, your own ranking, `maxTargets`; out of reach, missing parts |
+| `FightTests` | an answering aura's clicks going out through the flow, heard back, the head snapped to its aim and claimed by the flow, the head and both buttons declared and the keys only with footwork, the tracked player's eyes; a strike with a box held back while a turn-limited head turns and clicked once it looks, one without a box clicked regardless, a held button held; your aim asked with the point and its rotation applied at the flow's priority, an aim that drives filing nothing; footwork circling the target with the head on it, null leaving the keys, footwork that drives filing none; done when the target is gone, untracked though a key holds it, or out of your selector; failing with no target and with a failed strike; an attack that drives started, asked, stopped on pause, started again resuming and stopped on finishing, nothing claimed for it; a reflex on the use button pausing it, letting go of the head, no swings meanwhile, then swinging again; vitals as progress, so `stuckAfter` notices a fight not landing and not one that is; unknown and given eyes; the crystal attack placing with crystals in hand, the search hearing where so the next keeps off that base, breaking the crystal that shows up, idle with nothing to do, and a place a higher claim kept back never told to the search; builders naming what is missing |
 | `HoleTests` | singles, doubles along x and z and quads found in an obsidian ground, and trenches, missing headroom and a dirt wall not; safe only with bedrock walls and floor; nearest first, radius, found by any cell, equal when found again, shapes to choose; in the hole by footprint and wall height; a walker heading for a hole likely in, no sooner than possible and near the likely tick; a runner passing it not; holes beyond the horizon left out; a speed hacker in sooner and possibly sooner, the sprint-over split, and a prior leaning toward holes; the hole it is in first, a hole someone else is in occupied; builders naming what is missing |
 
 ---
@@ -1456,7 +1579,13 @@ through `testFixtures(project(':core'))`.
 - **A fast path when nothing wins** — with every spot too weak (an enemy deep in
   a hole), pruning never starts and every viable spot is estimated: about twice a
   normal search on the test grid. Worth measuring on real worlds first.
-- **Melee and city** — later capabilities alongside the crystal search. Auto-fill
-  and traps have their searches; surround is a module on the placement planner.
+- **Melee and city** — later capabilities alongside the crystal search. Melee
+  fights run on your own killaura through `Fight`; a ready-made `MeleeAttack`,
+  built from your reach and timing rules, is not written. Auto-fill and traps
+  have their searches; surround is a module on the placement planner.
+- **Ready-made footwork** — circle-strafing at a radius or keeping a distance, as
+  geometry on Core's simulation. Footwork is yours until then.
+- **More ready-made attacks** — bed and anchor attacks on their searches, as the
+  crystal attack is on `CrystalSearch`.
 - **Reference profiles** — whether to ship an optional `combat-vanilla` module of
   tested profiles per version is still open.

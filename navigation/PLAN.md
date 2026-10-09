@@ -1,8 +1,8 @@
 # Navigation — plan
 
-A working document, not documentation. Nothing here is built yet. It records
-what is decided (all of it agreed with James on 2026-10-08), what has to be
-settled while building, and the order of the work.
+A working document, not documentation. It records what is decided (agreed with
+James on 2026-10-08), what was built and decided while building, what is still
+to settle, and the order of the work.
 
 The plan covers two things that only make sense together:
 
@@ -214,13 +214,123 @@ with no game running. It also becomes our own test bed.
 
 ---
 
+## Built (2026-10-08)
+
+Steps 1 to 7 of the order of work are built; see [README.md](README.md)
+for how to use them. What was decided while building, beyond what is above:
+
+| Area | Decision |
+|---|---|
+| Controls | One `ControlService` (`Core.controls()`) for the movement keys and the two buttons (`Click.ATTACK`, `Click.USE`), each arbitrated on its own with `RotationService`'s rules: priority, first-acquirer tie-break, claims that expire. A movement claim is a whole `MovementInput` with the yaw its keys are meant for; claims are never merged. A button is clicked (once a tick, however often applied) or held, and a hold is always let go when it ends. Sinks: `MovementSink` (one method), `ClickSink` (two). `RotationService` was left as it is rather than moved onto the shared claims code |
+| The contract | `Goal`: `isMet(feet)`, `gap(feet)` and `anchor()` for goals that move. `Gap` is a lower bound split into across, up and down, because each is covered at its own speed and one distance would have to be divided by the fastest, falling. `PathProvider.plan(goal, from)` takes the state to plan from; `drives()`, `follow(goal)` and `cancel()` default to a provider that only plans. `Route` is coarse or precise; `Progress` is running, arrived, failed or stuck |
+| The planner's search | States are keyed by position, horizontal speed, vertical velocity and footing — not direction of travel, which multiplied the states for nothing. Moves are three gaits at eight headings plus straight at the goal, six ticks each. The search is weighted (greed 2 by default): measured on open ground, round a wall, over a gap and into a hole, it found the same routes as a strict search for a small fraction of the states. A strict search is one setting away |
+| Partial routes | A plan that runs out of range, ticks or states returns the closest route on the ground, if it gets at least a tick closer; otherwise none, with `PlanStats` counting every move thrown away under why |
+| Safety | The drop limit, a rule refusing states, and whether sprinting is allowed are the developer's, read live. The planner falls any distance until told otherwise |
+| The executor | Replans for drift, for a route that no longer lands where it did when replayed through the world (every ten ticks), for a goal that moved, for a partial route's end, and on a schedule if asked. Failing is sticky until the next `travel`. Stuck is reported, not acted on: no closer for a while, or drift every time it plans |
+| Calling order | The navigator ticks on `TickEvent` PRE, after the tick opens and before the game reads its keys; its claims last that tick |
+| Danger | `Hostiles` predicts each hostile once per plan and weighs every future by its share of belief. Asking a `Lookahead` per tick was a prediction per tick per hostile (about 100 ms a plan), and predictions further ahead than the tracker's history are unreliable, so the likeliest alone would fall back to where the hostile stands now |
+| A Core fix | `Simulation`'s sweep now treats boxes within 1e-7 of each other as touching. Compared exactly, a box pressed into a corner could sit a rounding error inside a wall and jump out through it; the planner found that route |
+
+
+### Steps 3 and 4 (2026-10-08)
+
+The flow engine, shared memory and the test kit are built: see
+[Core §16](../docs/16-flows.md) and [testkit/README.md](../testkit/README.md).
+
+| Area | Decision |
+|---|---|
+| Names | `Flow` is the factories; a flow is just its root `Step`, started with `Core.flows().start(name, step, priority)`, which returns a `FlowHandle`. So the sketch's `Flow bot = ...` is `Step bot = ...`, and `priority(50)` is a plain `50` |
+| Controls | **Steps declare what they claim** with `uses(Control...)` (`ROTATION`, `MOVEMENT`, `ATTACK`, `USE`). A reflex pauses only the flows below its priority whose *running* steps use a control its step uses. An undeclared claim still works and is warned about once (agreed with James) |
+| Claims | Through the context: `c.look`, `c.move`, `c.click`, `c.hold`, filed with the flow as owner at its priority, for one tick. A paused or ended flow lets go at once |
+| `ensures` | **Checked when the step finishes and on resume only** (agreed with James). Finishing without it holding fails the step; on resume a sequence rewinds to the earliest broken one and starts everything after it afresh. The flicker guard is a cap: more than 16 rewinds fails the sequence, naming the step |
+| Resuming | A paused step is started again with `c.isResuming()` true and carries on; a step rewound past starts afresh, and so does everything inside it |
+| Timing | A flow begins on its first flow pass after `start`, so a timeout or a wait counts the ticks its step actually gets. Up to 64 step changes per flow per tick, so instant steps cost no ticks and cannot spin |
+| Services for steps | Through `c.service(Type.class)`, from what the host provides: Core provides its own, the sandbox its own. Steps reach nothing through `Core`'s statics, which is the documented rule |
+| Memory | `Fact<T>`, one value or one per subject (by `equals`), with an age and an optional expiry as a `Span`. Kept for the session; leaving a world does not clear it |
+| Time | `Span.ticks(n)` or `Span.seconds(s)`, never converted into each other. Every clock is injectable |
+| The live view | `FlowView` / `StepView` snapshots: state, why, declared controls, ticks and time spent, keys and facts read and written, children. Ended flows stay until `clearFinished()` |
+| Test kit | **Its own sandbox, no `Core` singleton** (agreed with James): its own services, `SimWorld` (collision space and block view), `SimPlayer` (the sinks; moved by the real `Simulation`), `SimEntity` (scripted, seen through an `EntitySource`), `FakeProviders`, a fixed clock. Depends only on core |
+| Core's tests | **Use the test kit, test scope only** (agreed with James): core's main code never imports it |
+
+Still to build: step 8, the ready-made steps — `travel(...)` here first.
+
+
+### Step 8: the travel step (2026-10-09)
+
+Built: `Travel` in `dev.px.navigation`; see [README.md §6](README.md#6-travel-steps).
+
+| Area | Decision |
+|---|---|
+| Shape | **A factory built once** (agreed with James): `Travel.builder().provider(...).player(...).build()`, then `travel.to(goal)` or `travel.to(c -> goal)` makes a new `Travel.Trip` step each time, since a step runs in one place at a time. `travel.at(goal)` is the condition for `ensures` |
+| The player's state | **A supplier the developer gives the builder** (agreed with James), read each tick. Core has no player of its own; a `PlayerSource` adapter piece in Core was considered and left until a second ready-made step needs it |
+| Stuck | **Keeps running** (agreed with James): the navigator keeps trying and the step's progress is the blocks left, for the flow's `stuckAfter`. `failWhenStuck`, read each tick, fails it instead |
+| The navigator | One per step, built on its first start from the flow's services: its controls, rotations and `SimulationService`, at the flow's priority read each tick. The developer's `navigator(...)` settings are applied first, so the flow's services and priority always win. The navigator claims as its own owner; the step stops it on every stop, so a pause lets go at once and cancels a provider that drives |
+| Resuming | The trip begins afresh: the goal is asked for again and the navigator plans from where the player is |
+| Failing | No route, a null goal, a null player state and a host with no simulation each fail the step with a reason; nothing throws |
+| Testing | Navigation's tests use the test kit at test scope (`testImplementation project(':testkit')`), as Core's do |
+
+Step 8 continues below with `fight(...)` in combat; the others come as modules
+need them.
+
+
+### Step 8: the fight step (designed and built 2026-10-09)
+
+The aim: a developer whose client already has a killaura can plug it in, and
+keep their own strafe and rotation logic.
+
+```java
+Fight<Player> fight = Fight.<Player>builder()
+        .attack(myKillAura)            // required: when to swing, and at what
+        .aim(myRotations)              // optional: how the head turns; snaps by default
+        .footwork(myStrafe)            // optional: keys while fighting; none by default
+        .build();
+
+Step bot = Flow.sequence(
+        findEnemy.into(TARGET),
+        travel.to(c -> Goal.near(c.get(TARGET), 4)),
+        fight.against(TARGET));        // or against(c -> tracked)
+```
+
+| Area | Decision |
+|---|---|
+| Where | `dev.px.combat.fight`, in combat. Combat still depends only on Core: it never imports navigation |
+| Plugging in | **Three parts, each answering or driving** (agreed with James). `Attack<E>`, the aura: where to look and whether to click or hold `ATTACK` or `USE` this tick, with its timing, reach and rays inside it. `Aim`: how the head turns to that point, as a `RotationRequest`; snaps by default. `Footwork<E>`: the keys this tick, as a `MovementInput` with the yaw they are meant for, or none to leave them to a travel step or the player. Each part either **answers**, and the step files the claims through the flow at its priority, or **drives**, acting through the client's own code, with `start` and `stop` so a pause still stops it, as `PathProvider.drives()` does for Baritone. Parts mix: the developer's aura with ready-made footwork, a ready-made crystal attack with their aim |
+| Modules | Unchanged rule: a flow never turns a KillAura module on or off. The aura's logic is a plain object both the module and the step call, as one `CrystalSearch` serves AutoCrystal and a bot |
+| A client's own rotation manager | Reached through Core's `RotationSink`, which hands the chosen rotation to it; the fight step does not need to know about it. Strafing while aiming elsewhere is the adapter's `MovementSink` correcting keys to the faced yaw (`MovementCorrection`) |
+| Ending | Done when the target is lost (no longer tracked or passing the selector) or an `until` holds; failed with no target at the start. Given combat's `Vitals`, its progress is the target's health, so `stuckAfter` notices a fight that is not landing hits |
+| Ready-made, this round | **The framework and a `CrystalAttack` on `CrystalSearch`** (agreed with James). Melee stays the developer's killaura for now; a ready-made `MeleeAttack` and geometric footwork come later if wanted |
+| Chasing | **Travel can leave the head** (agreed with James): a Travel and Navigator setting that claims only the keys, relying on the adapter's movement correction, so `Flow.race(fight.against(T), Flow.loop(travel.to(...)))` has the fight own the head while travel moves. Corrected keys are a little less exact, so the navigator re-plans a little more |
+| Game facts | None in the library: reach, attack cooldown and hit delay live in the developer's `Attack`, or are rules they give a ready-made one. The crystal attack never holds an item: whether crystals are in hand is the developer's setting it reads (rule 3) |
+
+Built: `dev.px.combat.fight` (`Fight`, `Fight.Round`, `Attack`, `Aim`,
+`Footwork`, `Part`, `Bout`, `Strike`, `CrystalAttack`), and `turnHead` on
+`Navigator` and `Travel`; see [combat §11](../combat/README.md#11-fighting).
+Settled while building:
+
+| Area | Decision |
+|---|---|
+| What parts are given | A `Bout`, made fresh each tick: the target's `Tracked`, the eyes, where the head is (Core's rotation service, so after the fight's aim is filed, where it will be), ticks fought (pauses not counted), the flow's `FlowContext`, and `isFacing(box)` |
+| The eyes | Those of the player the flow host's `EntityService` tracks; `eyes(...)` on the builder overrides. Neither known fails the step, saying so |
+| A strike | `Strike.at(point).click(button)` or `.hold(button)`, `.whenFacing(box)`: clicked only if a ray from the eyes along the head as turned this tick meets the box. Reach is the attack's to check. `Strike.failed(reason)` is how any attack, driving or not, fails the fight |
+| Hearing a click | `Attack.struck(bout, strike)` is called only when the button was claimed, so cooldowns and the crystal search's bookkeeping count only clicks that went out |
+| Parts that drive | One `drives()` on a shared `Part`, with `start` and `stop`. A driving part's per-tick method is still called; the step files nothing for it. A driving attack's strike is ignored unless it failed |
+| The crystal attack | One action a tick, breaking first. A break is an attack on the crystal facing its box; a place is a use facing the block the option clicks. `attacked` and `placed` are told on `struck`. `placing` (crystals in hand) is the developer's, required; `breaking` is on by default. The search's targets are its own |
+| Several steps | The parts are the developer's objects, shared by every step one `Fight` makes: run one at a time |
+| Chasing | `Navigator.Builder.turnHead(BooleanSupplier)`, read each tick, and `Travel.Builder.turnHead(boolean)`, which also drops `ROTATION` from what the steps declare |
+| Testing | Combat's tests use the test kit at test scope, as navigation's do. A `CrystalSearch` reads the player with its targets' type, so in the sandbox, whose player is a `SimPlayer`, the test's search is over `Object` |
+
+
+---
+
 ## To settle while building
 
-- **Handing over between a long-range provider and the local planner:** when the
-  local planner takes a section, and how a driving provider like Baritone is
-  paused while it does.
-- **Planning off the game thread:** the planner needs a snapshot of the blocks,
-  or a `CollisionSpace` that is safe to read from another thread.
+- **Handing over between a long-range provider and the local planner:** settled
+  for providers that plan: a coarse route is handed to the local planner a
+  stretch (16 blocks) at a time. Still open for a driving provider: how Baritone
+  is paused while the local planner takes a section.
+- **Planning off the game thread:** v1 plans on the game thread inside a state
+  budget, reading each block once per plan into a cache. Off-thread planning
+  still needs a snapshot of the blocks or a thread-safe `CollisionSpace`.
 - **Steps that change the world:** v1's planner only moves. Breaking through or
   bridging, as Baritone does, would come with a construction module and the
   placement planner moved into core.
@@ -229,29 +339,30 @@ with no game running. It also becomes our own test bed.
   add to.
 - **Server movement checks:** general presets only, such as limiting sprint-jumps
   or turning speed (rule 4). Nothing written for one anticheat.
-- **Flickering `ensures` conditions:** a guard so a flow doesn't bounce between
-  rewinding and resuming.
+- **Flickering `ensures` conditions:** settled: `ensures` is checked on finishing
+  and on resume only, and a sequence that rewinds past a cap fails, naming the step.
 - **Unloaded chunks:** what the planner and executor do at the edge of what the
   client can see.
-- **The exact API names and signatures**, decided as each piece is built.
+- **The exact API names and signatures**, decided as each piece is built (done
+  for steps 1 to 7).
 
 ---
 
 ## Order of work
 
-1. **Core: controls.** Claims for movement keys and clicks with priorities, like
+1. **Core: controls.** *Built.* Claims for movement keys and clicks with priorities, like
    `RotationService`, and the sink the adapter implements.
-2. **Core: the navigation contract.** `Goal`, `PathProvider`, `Route`, `Progress`.
-3. **Core: the flow engine and shared memory.** Steps, keys, sequence, loop,
+2. **Core: the navigation contract.** *Built.* `Goal`, `PathProvider`, `Route`, `Progress`.
+3. **Core: the flow engine and shared memory.** *Built.* Steps, keys, sequence, loop,
    until, `firstOf`, `parallel`, `race`, `awaitEvent`, interrupts and reflexes,
    rewinding on resume, `stuckAfter`, the live view.
-4. **`testkit/`.** The simulated world, fake providers and the tick runner. Built
+4. **`testkit/`.** *Built.* The simulated world, fake providers and the tick runner. Built
    alongside step 3, since the engine's own tests need it.
-5. **Navigation: the executor**, following routes from providers that only plan,
+5. **Navigation: the executor** *(built)*, following routes from providers that only plan,
    and the guide to writing a Baritone adapter (driving).
-6. **Navigation: the local precise planner.**
-7. **Navigation: danger.**
-8. **Ready-made steps:** `travel(...)` here, `fight(...)` in combat, and the
+6. **Navigation: the local precise planner.** *Built.*
+7. **Navigation: danger.** *Built.*
+8. **Ready-made steps:** `travel(...)` here *(built)*, `fight(...)` in combat *(built)*, and the
    others as modules need them.
 
 Each step gets its suite, its mutation checks and its docs, like everything else

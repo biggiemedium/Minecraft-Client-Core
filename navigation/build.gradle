@@ -1,7 +1,8 @@
 // Navigation: following routes from any pathfinder, and a precise local planner
-// built on Core's movement simulation. Optional, and in design: see PLAN.md.
+// built on Core's movement simulation. Optional: see README.md, and PLAN.md for what comes next.
 
 dependencies {
     api project(':core')
     testImplementation testFixtures(project(':core'))
+    testImplementation project(':testkit')        // the sandbox, for the travel step's tests
 }

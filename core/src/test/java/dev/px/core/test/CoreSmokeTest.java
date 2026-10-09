@@ -7,12 +7,16 @@ import dev.px.core.test.suite.CommandTests;
 import dev.px.core.test.suite.ConcurrentTests;
 import dev.px.core.test.suite.ConfigStorageTests;
 import dev.px.core.test.suite.ConfigTests;
+import dev.px.core.test.suite.ControlTests;
 import dev.px.core.test.suite.EventTests;
+import dev.px.core.test.suite.FlowTests;
 import dev.px.core.test.suite.HudContentTests;
 import dev.px.core.test.suite.HudEditorTests;
 import dev.px.core.test.suite.HudLayoutTests;
 import dev.px.core.test.suite.MathTests;
+import dev.px.core.test.suite.MemoryTests;
 import dev.px.core.test.suite.ModuleTests;
+import dev.px.core.test.suite.NavigationContractTests;
 import dev.px.core.test.suite.MovementTests;
 import dev.px.core.test.suite.NetworkTests;
 import dev.px.core.test.suite.PredictionTests;
@@ -63,6 +67,8 @@ public final class CoreSmokeTest {
         SpatialTests.run();
         WorldTests.run();
         MovementTests.run();
+        NavigationContractTests.run();
+        MemoryTests.run();
         ConfigStorageTests.run();
 
         TestClient client = TestClient.boot();
@@ -78,6 +84,8 @@ public final class CoreSmokeTest {
         HudEditorTests.run(client);
         ShaderTests.run(client);
         RotationTests.run(client);
+        ControlTests.run(client);
+        FlowTests.run(client);
         SimulationTests.run(client);
         PredictionTests.run(client);
         BehaviourTests.run();
